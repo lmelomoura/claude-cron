@@ -19,6 +19,7 @@ is generic: a job is just *a schedule + a precheck + a prompt*.
 - **[Claude Code CLI](https://claude.com/claude-code)** on your `PATH` (`claude --version` must work and be signed in).
 - `jq`, `python3`, `curl` (python3 ships with the Xcode command-line tools; `jq` via `brew install jq`).
 - Codex CLI 0.148 or later, signed in — **optional**, for jobs on the OpenAI platform (see **Platforms**).
+- OpenCode CLI (`opencode`; measured against opencode-ai 1.18.30) with a usable provider — **optional**, for jobs on the OpenCode platform (see **Platforms**). The free `opencode/*-free` models need no account.
 
 ---
 
@@ -36,8 +37,8 @@ download, AirDrop or email, macOS flags it with a quarantine attribute and
 flag from the whole folder (so `bin/agentloop` can run later). If you ever hit
 that error anyway, clear it by hand once: `xattr -cr agentloop`.
 
-It checks dependencies (the Codex CLI is optional and only reported — see
-[Platforms](#platforms)), links `agentloop` into `~/.local/bin`, seeds a
+It checks dependencies (the Codex and OpenCode CLIs are optional and only
+reported — see [Platforms](#platforms)), links `agentloop` into `~/.local/bin`, seeds a
 `config/jobs.json` from the example, and loads two `launchd` agents (a scheduler
 that ticks every 60 s and a control server for the dashboard). Both start
 automatically on login. Re-run it any time — it is idempotent, and you must
@@ -159,7 +160,10 @@ into `~/.claude/skills` — `agentloop install` does it, and `install.sh` runs
 that, so a fresh clone is ready without a documented step for someone to skip.
 When the Codex CLI has a home (`~/.codex` exists), the same links go into
 `~/.codex/skills`; an analysis on OpenAI is also pointed at its skill file by
-path, so it does not depend on discovery.
+path, so it does not depend on discovery. OpenCode reads `~/.claude/skills`
+itself (measured: the agent lists them and loads one by name through its
+`skill` tool), so the one link serves both CLIs and there is nothing more to
+link; an analysis on it names the skill both ways, by name and by path.
 
 ```bash
 agentloop skills           # what is linked, diverged, or missing
@@ -241,16 +245,16 @@ A job is one object in `config/jobs.json`. Fields:
 | `active_hours` | `"08:00-20:00"` (empty = 24h) |
 | `active_days` | `[1..7]`, 1=Mon |
 | `project` | optional group; the job inherits the project's `cwd` (see **Projects**) |
-| `platform` | `anthropic` (Claude Code) or `openai` (Codex CLI); omit to inherit the project's, which defaults to `anthropic`. `model`, `effort` and `permission_mode` keep their names and take that platform's vocabulary — see **Platforms** |
-| `model` | an exact model id (`claude-opus-5`, …) or a family (`opus`/`sonnet`/`haiku`/`fable`). On `openai`: a catalog slug (`gpt-5.6-sol`), verbatim |
-| `effort` | `low`/`medium`/`high`/`xhigh`/`max` — how hard the model thinks (omit = the CLI decides). On `openai`: the model's own levels (up to `ultra`) |
+| `platform` | `anthropic` (Claude Code), `openai` (Codex CLI) or `opencode` (OpenCode CLI); omit to inherit the project's, which defaults to `anthropic`. `model`, `effort` and `permission_mode` keep their names and take that platform's vocabulary — see **Platforms** |
+| `model` | an exact model id (`claude-opus-5`, …) or a family (`opus`/`sonnet`/`haiku`/`fable`). On `openai`: a catalog slug (`gpt-5.6-sol`), verbatim. On `opencode`: `provider/model`, the CLI's own id (`pdm_ai/glm-5.3-flash`), verbatim; the first slash separates the provider |
+| `effort` | `low`/`medium`/`high`/`xhigh`/`max` — how hard the model thinks (omit = the CLI decides). On `openai`: the model's own levels (up to `ultra`). On `opencode`: one of the model's `variants` (`high`, `max`, `non-think`, … per model); a model without variants takes none |
 | `max_budget_usd` | hard ceiling per single run |
 | `daily_budget_usd` | ceiling on total spend per day (**omit = no cap**) |
 | `stall_timeout_seconds` | kill a run only after this long with **no output** (default 1200) |
 | `timeout_seconds` | optional absolute time cap (**omit = no limit**) |
-| `permission_mode` | **defaults to `bypassPermissions`** (full autonomy, and the only Anthropic mode that can use a tool headless). `dontAsk` means *allowlisted tools only*, so without an `allowed_tools` list it denies everything and the run says so after spending a session — a job on it is warned about in `tick.log`. On `openai`: `read-only` (no writes, no network), `workspace-write` (writes inside the worktree, network open) or `full-access` (no sandbox) |
-| `allowed_tools` | allowlist passed as `--allowedTools`, whole and as a single argument — so a comma-separated list *and* a specifier containing a space, like `Bash(git *)`, both arrive intact (**omit = every tool**) |
-| `disallowed_tools` | denylist passed as `--disallowedTools`, same handling (**omit = nothing denied**). Set both fields and **deny wins** for any tool named in each — an allowlist can never re-open what the denylist closed. A security analysis is derived with `Agent` here (the CLI's own tool roster calls that tool `Task`), so it cannot spend its budget on subagents instead of triage |
+| `permission_mode` | **defaults to `bypassPermissions`** (full autonomy, and the only Anthropic mode that can use a tool headless). `dontAsk` means *allowlisted tools only*, so without an `allowed_tools` list it denies everything and the run says so after spending a session — a job on it is warned about in `tick.log`. On `openai`: `read-only` (no writes, no network), `workspace-write` (writes inside the worktree, network open) or `full-access` (no sandbox). On `opencode`: `full-access` (the default; there is no sandbox) or `read-only` (`edit`, `write`, `bash` and `task` denied by rule) |
+| `allowed_tools` | allowlist passed as `--allowedTools`, whole and as a single argument — so a comma-separated list *and* a specifier containing a space, like `Bash(git *)`, both arrive intact (**omit = every tool**). On `opencode` the same list is translated into the permission block the run launches with — see **Platforms** |
+| `disallowed_tools` | denylist passed as `--disallowedTools`, same handling (**omit = nothing denied**). Set both fields and **deny wins** for any tool named in each — an allowlist can never re-open what the denylist closed. A security analysis is derived with `Agent` here (the CLI's own tool roster calls that tool `Task`; on `opencode` it becomes `task: deny` in the permission block), so it cannot spend its budget on subagents instead of triage |
 
 Create and edit jobs entirely from the dashboard (**+ New job** / **Edit**),
 including the precheck script, or from the CLI.
@@ -562,10 +566,15 @@ once", which every project that isolates eventually meets.
 Three ceilings, each answering a different question.
 
 - **Per-run** (`max_budget_usd`) — passed to `claude -p --max-budget-usd`; caps a
-  single run. Job value first, else the project's. On OpenAI there is no such
-  flag: when the run ends, the estimated cost is compared with the job's own
+  single run. Job value first, else the project's. On OpenAI and on OpenCode
+  there is no such flag: when the run ends, the cost (estimated on OpenAI; on
+  OpenCode the CLI's own figure, or an estimate) is compared with the job's own
   `max_budget_usd` (not the project's) and a run that otherwise succeeded is
-  marked BUDGET LIMITED at 90% of it — a warning, never a stop.
+  marked BUDGET LIMITED at 90% of it — a warning, never a stop. A run whose
+  cost is unknown (a model with no price, on any platform) cannot be compared
+  at all, and says so instead of staying silent: the run's note and `tick.log`
+  carry *max_budget_usd $X not applied: the cost of this run is unknown*, and
+  the status is left alone.
 - **Per-day, per job** (`daily_budget_usd`) — the engine sums today's runs for
   the job before each scheduled run and skips (status `capped`) once the total
   reaches the cap. Job value first, **else the project's** — so a project with
@@ -585,8 +594,11 @@ Three ceilings, each answering a different question.
   cost me?" is the sum.
 
 All three are skipped for a **forced** run (Run now), which is a deliberate
-override — the same way it bypasses the precheck. Estimated costs (OpenAI)
-count towards the daily caps like reported ones.
+override — the same way it bypasses the precheck. Estimated costs (OpenAI, and
+an OpenCode model priced only in `config/pricing.json`) count towards the daily
+caps like reported ones; a run with no figure at all (`cost_basis: none`)
+counts as zero towards them, which is why an unpriced model is named by
+`agentloop status` and by the job editor.
 
 ### Backing off a job that keeps failing
 
@@ -649,7 +661,9 @@ It prints `5h 62% · 7d 18%`, so it still earns its place as a status line.
 
 The statusline feeds the `anthropic` block only. The `openai` block is fed by
 every Codex run's rollout, so there is nothing to wire for it; `agentloop
-usage` lists both.
+usage` lists both. OpenCode has no usage windows — each provider has its own
+API, and nothing on the stream or in the export reports one — so the gate
+never holds an OpenCode run back, and `agentloop usage` says exactly that.
 
 ### Telling someone a run ended: `config/hooks/on-run-end.sh`
 
@@ -665,7 +679,7 @@ after every run, with the outcome in its environment:
 | `AL_NOTE` | why it ended as it did (`BUDGET LIMITED: …`, `NOTHING TO DO: …`, a watchdog reason) |
 | `AL_PROJECT`, `AL_SESSION`, `AL_LOG` | |
 | `AL_START`, `AL_END`, `AL_DURATION` | epoch seconds, and the span |
-| `AL_PLATFORM` | `anthropic` or `openai` |
+| `AL_PLATFORM` | `anthropic`, `openai` or `opencode` |
 | `AL_COST_BASIS` | `reported`, `estimated` or `none` — where `AL_COST` came from |
 | `AL_TOKENS` | the run's token counts as JSON (`{input, cached, cache_write, output, reasoning}`), or `null` when unknown |
 | `AL_DASHBOARD` | the dashboard URL |
@@ -744,6 +758,18 @@ agrees with the engine's, and that its riskier save paths behave: they run the
 page's real functions over a stub DOM in `node`, so a save that would wipe a
 provisioning hook fails the suite rather than the operator's config.
 
+The platforms are tested without their CLIs. `tests/test_opencode_stream.py`
+runs `bin/platforms/opencode_stream.py` over the measured OpenCode streams in
+`test/fixtures/opencode/` (a tool turn, the two denial phrases, an unknown
+model, a 401, a paid provider's cost, a truncated copy, a malformed line) and
+checks what comes out the other side, as `test_openai_stream.py` does for
+Codex; `test/fake-opencode` is the stand-in `selftest` and `test/e2e.test.sh`
+launch in place of the real CLI — it answers `--version`, `models`, `auth
+list`, `run` and `export` with the measured shapes, `FAKE_MODE` picks the run
+(complete, undeclared, dirty, hang, silent, reject, deny, error, quota) and it
+records the argv and the `--dir` it was launched with, so the launch line is
+asserted, not assumed.
+
 `tests/security/` is run **twice**. It is pinned to the built-in secret scanner
 (`AL_SECURITY_ENGINES=off`) so that a test planting a credential exercises one
 scanner rather than whichever binaries a laptop happens to have installed — and
@@ -793,6 +819,24 @@ reason is recorded, and the log rebuilds what the run did from its stream — th
 session, the turn count and the agent's last message — so a killed run still
 explains itself.
 
+"No output" is read together with the run's CPU: a tool call that computes for
+an hour writes nothing to the stream and is still alive. One narrow rule sits
+on top of that, and it changes the fate of no run that ever wrote a byte: **a
+run whose stream is still empty after `stall_timeout_seconds` is killed
+whatever its CPU does** — a CLI whose provider never answered. Measured on
+OpenCode: a process whose provider accepted the connection and never replied,
+or a resume the CLI took to another directory, hangs for ever with no output
+and still gains about one CPU second every 75 seconds of idling, which the CPU
+signal read as life, so the stall never fired and, with no default
+`timeout_seconds`, the run held its slot for ever. Every healthy run of every
+platform writes its first event long before the default twenty minutes (the
+`init` of Claude Code and the `thread.started` of Codex at once, OpenCode's
+`step_start` when the model starts answering, tens of seconds measured). The
+note on such a run says which rule fired: *stalled: no output at all for Ns
+(the CLI never started answering; killed by watchdog)*. A provider that dies
+*after* the first byte still rides on the CPU signal; `timeout_seconds` is the
+tool for that one.
+
 ### Models
 
 Pick an exact id (`claude-opus-5`) when a task does not deserve the top model, or
@@ -805,9 +849,21 @@ resolve-models` probes for the newest of each family and caches the answer in
 On the OpenAI platform a model is a catalog slug used verbatim (`gpt-5.6-sol`);
 `agentloop resolve-models openai` reads the catalog from `codex debug models`
 into the same `config/models.json`, and `resolve-models` with no argument
-refreshes both platforms. New OpenAI models need no step here: `codex debug
+refreshes all three platforms. New OpenAI models need no step here: `codex debug
 models` refreshes the catalog from OpenAI's servers, the tick runs
 `resolve-models` daily, and the price refresh runs right after it.
+
+On OpenCode a model is `provider/model`, the id `opencode models` prints, used
+verbatim (`pdm_ai/glm-5.3-flash`). The first slash separates the provider, so
+an id with a slash of its own (`pdm_ai/openai/gpt-oss-120b`) is one model of
+the provider `pdm_ai`. `agentloop resolve-models opencode` reads `opencode
+models --verbose --pure` into the same file — per model the price per million
+tokens, whether it is priced at all, the context window, the `variants` and
+whether it makes tool calls — and the tick refreshes it daily with the other
+two. The catalog is what the CLI itself resolves at launch: a provider added to
+`~/.config/opencode/opencode.json` appears at the next refresh (measured),
+and no `--refresh` is passed — refreshing the CLI's own models.dev cache is
+the CLI's business (`opencode models --refresh`, by hand).
 
 ### Effort
 
@@ -818,27 +874,36 @@ from *Faster* to *Smarter*; leave it at **Default** to let the CLI decide.
 On OpenAI it maps to `-c model_reasoning_effort=<level>`, and the levels are the
 model's own (the catalog says; `gpt-5.6-sol` accepts `ultra`).
 
+On OpenCode it maps to `--variant`, and the values are the model's own
+`variants` from the catalog (`high`, `max`, `non-think`, … — each model lists
+its own, and a model without any takes no effort). They are named, not
+ranked, so the dashboard shows no *Faster*/*Smarter* captions there. The CLI
+accepts any variant in silence and does nothing with an unknown one
+(measured), so the engine validates it: `set-field` refuses a value the
+model does not list, and a job that still carries one is launched without an
+effort, with a line in `tick.log`.
+
 ---
 
 ## Platforms
 
-A job, a project or a project's `security` block can run on one of two
+A job, a project or a project's `security` block can run on one of three
 platforms. `platform` is the field; everything else keeps its name and takes
 that platform's vocabulary.
 
-| | `anthropic` (default) | `openai` |
-|---|---|---|
-| CLI | Claude Code, `claude -p` | Codex CLI, `codex exec --json` |
-| `model` | a family (`opus`) or an id (`claude-opus-5`) | a catalog slug (`gpt-5.6-sol`), verbatim — no families |
-| `effort` | `low` `medium` `high` `xhigh` `max` | the model's own levels (`gpt-5.6-sol` goes up to `ultra`) |
-| `permission_mode` | `dontAsk`, `bypassPermissions`, … | `read-only`, `workspace-write`, `full-access` |
-| the network | open in every mode | `workspace-write` sandboxes the filesystem and **keeps the network** (the CLI seals it by default; the engine passes `sandbox_workspace_write.network_access=true`, because every job here talks to a tracker or a forge). `read-only` is sealed to both. `full-access` has no sandbox |
-| writing git history | anywhere the account can | a run's checkout is a `git worktree`, so its commits write into the canonical repo's `.git` — outside the sandbox, and refused there. The engine declares that directory (only it, never the canonical checkout) in `sandbox_workspace_write.writable_roots`, one entry per repo of the run |
-| `interactive` | yes | no — `codex exec` has no stdin protocol; the run is refused |
-| `allowed_tools`, `disallowed_tools` | yes | ignored, with a line in `tick.log`: Codex cannot close a tool by flag (measured: `--disable multi_agent` leaves `spawn_agent` in the roster) |
-| `max_budget_usd` | `--max-budget-usd`, stops the run | no flag: the cap is read at the end and produces the BUDGET LIMITED warning |
-| cost | reported by the CLI | **estimated** from tokens with `config/pricing.json` |
-| usage windows | the statusline (see `agentloop usage`) | every run's own rollout — nothing to wire |
+| | `anthropic` (default) | `openai` | `opencode` |
+|---|---|---|---|
+| CLI | Claude Code, `claude -p` | Codex CLI, `codex exec --json` | OpenCode, `opencode run --format json` |
+| `model` | a family (`opus`) or an id (`claude-opus-5`) | a catalog slug (`gpt-5.6-sol`), verbatim — no families | `provider/model`, the CLI's own id (`pdm_ai/glm-5.3-flash`), verbatim — no families; the first slash separates the provider |
+| `effort` | `low` `medium` `high` `xhigh` `max` | the model's own levels (`gpt-5.6-sol` goes up to `ultra`) | the model's `variants` (`high`, `max`, `non-think`, … per model); a model without variants takes none |
+| `permission_mode` | `dontAsk`, `bypassPermissions`, … | `read-only`, `workspace-write`, `full-access` | `full-access`, `read-only` |
+| the network | open in every mode | `workspace-write` sandboxes the filesystem and **keeps the network** (the CLI seals it by default; the engine passes `sandbox_workspace_write.network_access=true`, because every job here talks to a tracker or a forge). `read-only` is sealed to both. `full-access` has no sandbox | open in both modes |
+| writing git history | anywhere the account can | a run's checkout is a `git worktree`, so its commits write into the canonical repo's `.git` — outside the sandbox, and refused there. The engine declares that directory (only it, never the canonical checkout) in `sandbox_workspace_write.writable_roots`, one entry per repo of the run | anywhere the account can: there is no sandbox (measured: `bash` writes outside the directory and commits from a worktree) |
+| `interactive` | yes | no — `codex exec` has no stdin protocol; the run is refused | no — `opencode run` reads stdin as part of the prompt; the run is refused |
+| `allowed_tools`, `disallowed_tools` | yes | ignored, with a line in `tick.log`: Codex cannot close a tool by flag (measured: `--disable multi_agent` leaves `spawn_agent` in the roster) | yes, translated into the permission block the run is launched with (`Agent` closes `task`; `Bash(git push *)` is a bash rule; deny wins) |
+| `max_budget_usd` | `--max-budget-usd`, stops the run | no flag: the cap is read at the end and produces the BUDGET LIMITED warning | no flag: read at the end, BUDGET LIMITED; over an unknown cost the run says the cap was not applied |
+| cost | reported by the CLI | **estimated** from tokens with `config/pricing.json` | **reported** by the CLI when its catalog prices the model; estimated from `config/pricing.json`'s `opencode` rows otherwise; unknown (never zero) when neither |
+| usage windows | the statusline (see `agentloop usage`) | every run's own rollout — nothing to wire | none: each provider has its own API |
 
 **Choosing.** Set `"platform": "openai"` on the job, or on the project so its
 jobs inherit it. `agentloop set-field <id> platform openai` rewrites a
@@ -849,7 +914,14 @@ resolve-models openai` writes it into `config/models.json`, the tick
 refreshes it daily — a refresh that fails keeps the catalog it had, stamped
 `stale_at`/`stale_reason`, and is retried the next day — and a slug outside
 it is refused at launch; a deprecated slug still runs, with its successor
-named in `tick.log`.
+named in `tick.log`. `"platform": "opencode"` works the same way, on a job, a
+project or a `security` block, and `set-field` and `create` treat it like
+the other two. Its catalog is what `opencode models --verbose --pure` lists —
+the providers the CLI holds a key for, plus the free `opencode/*-free`
+models — and `agentloop resolve-models opencode` writes it
+into `config/models.json`, refreshed daily with the other two; a refresh that
+fails keeps the catalog it had, stamped the same way, and an id outside the
+catalog is refused at launch, naming `resolve-models opencode`.
 
 **What a run needs.** The Codex CLI installed and signed in (`codex login`);
 the platform switched on in Settings, and the model switched on for it — a run
@@ -862,6 +934,24 @@ overrides the binary, ahead of the path set in Settings and of detection;
 `CODEX_HOME` is the CLI's own variable and picks the account and where its
 rollouts live.
 
+On OpenCode a run needs the CLI installed and a provider usable: `opencode
+models` lists at least one model. The free `opencode/*-free` models need no
+account at all; a provider with a key is configured in the CLI (`opencode auth
+login`, or `~/.config/opencode/opencode.json`), and the platform check reads
+readiness from the catalog, not from the credential count — `opencode auth
+list` says how many credentials there are, not which providers are usable. A
+CLI with no model to list is *no usable provider*, and the check says what to
+run. The same Settings switches apply, platform and model. `AGENTLOOP_OPENCODE_BIN`
+overrides the binary the same way (a stand-in, or one specific binary for
+the scheduled runs); `AGENTLOOP_OPENCODE_DEADLINE` is the number of seconds
+the engine gives each `opencode models`, `auth list` and `export` call before
+it counts as hung — default 30, twice that for `models --verbose`; the
+server's first in-request catalog resolve uses 10 — because a CLI whose
+provider accepts the connection and never answers hangs for ever, silently
+(measured), and a hung `models` must not become a hung Settings page. Past
+the deadline the whole process group is ended and the answer is *timed out*,
+never *no usable provider*: those are two different facts.
+
 **How a Codex run is read.** `bin/platforms/openai_stream.py` translates the
 Codex event stream into the stream-json every reader here already speaks, so
 the Timeline, the Terminal, the classifier and the salvage of a killed run
@@ -873,6 +963,49 @@ since is refused with both named. The model that actually ran and the usage
 windows are not on the stream: both are read from the rollout under
 `$CODEX_HOME/sessions` when the run ends.
 
+**How an OpenCode run is read.** `bin/platforms/opencode_stream.py` is the
+sibling of `openai_stream.py` and does the same job: every OpenCode event
+becomes stream-json (a `text` an assistant message, a completed `tool_use` a
+tool call and its result at once, under Claude's tool names, so the Timeline
+draws `Bash` with the command; the `step_finish` events summed into one
+`result` with the tokens and the cost), the raw stream is kept beside it as
+`<run>.stream.ndjson.raw`, and the first line is written the moment the CLI's
+first event arrives. The session id is the `sessionID` every event carries. A
+resume is `opencode run -s <session> --dir <run dir>`, and `--dir` is not
+optional: a session resumes only from the directory it was born in — from any
+other directory the CLI runs the turn in a second instance the command never
+hears, spends it, and hangs for ever without writing a byte (measured) — so
+the engine passes `--dir` on every launch, and a resume whose retained
+directory is gone is refused before it starts. The stream names no model: the
+one that ran is read from `opencode export <session>` when the run ends
+(`info.model`, provider and id), and stays the requested id, with a line in
+`tick.log`, when the export fails or times out. The permission mode and the
+job's tool lists do not travel on the command line but in the process
+environment, as `OPENCODE_CONFIG_CONTENT`: `full-access` sends `share:
+disabled` and an empty permission block, nothing else — `--auto` approves
+what the CLI would otherwise ask about (a file outside the run directory, a
+`.env`, a loop), and there is no sandbox to configure; `read-only` denies `edit`,
+`write`, `bash` and `task`, so the agent reads, searches and fetches and
+changes nothing; and the lists add their rules — `Agent` becomes `task:
+deny`, `Bash(git push *)` a bash pattern; a pattern on any other tool widens
+to the whole tool in a denylist (closing more than asked is the safe side)
+and is dropped from an allowlist (opening more than asked is not), with a
+line in `tick.log` either way; `share: disabled` always, so no session ends
+up on a public link by an operator's configuration. Every run launches with
+`--pure`, which switches the operator's OpenCode plugins off and keeps the
+skills (measured: without it one plugin rewrote `ls` to `rtk ls` and another
+added ~3k tokens of instructions to every step; with it the agent still saw
+`~/.claude/skills` and the run directory's `.opencode/skills`); with `--title
+"agentloop <job> <stamp>"` on a new run, which saves the CLI a call to a small
+model to name each session (a resume has a title already); and with
+`--print-logs --log-level ERROR`, which writes nothing on a healthy run and is
+the only place the reason of an `UnknownError` appears — an unknown model or
+provider says `ProviderModelNotFoundError` in `<run>.err`, a provider error
+the CLI retried leaves its line there, and either way any byte of stderr
+makes the run a `warning`, as on the other two platforms. A tool call denied
+by rule is an event on the stream: the run ends `error` with the cause
+`tools_denied`, exactly what a `--disallowedTools` hit does on Claude Code.
+
 **Cost.** Codex reports tokens, never dollars. The final event carries an
 estimate — `(input − cached) × input + cached × cached_input + cache_write ×
 cache_write + output × output`, per million, from `config/pricing.json` — and
@@ -883,6 +1016,36 @@ towards them. The dashboard shows an estimate as `~$0.03` and `none` as a
 dash, with the basis on hover, and the Overview's *Spent today* names the
 estimated share. `output_tokens` includes reasoning, so reasoning is reported
 (`tokens.reasoning`) but never billed twice.
+
+OpenCode reports dollars when it can, and a run there has one of three
+bases. The CLI's catalog carries a price per model, and on a priced model the
+run records `reported` with the sum of the CLI's own per-step figures
+(measured on a paid provider: the CLI's number is its catalog price applied
+to the tokens, reasoning at the output rate). A model the catalog prices at
+**zero is unknown, never free**: a provider with no price configured lists
+the same zeros as a free one (measured), so such a run is `estimated` when
+`config/pricing.json` has a row for it under `opencode` — the CLI's own
+formula, `input × input + (output + reasoning) × output + cached ×
+cached_input + cache_write × cache_write`, per million, `input` already
+excluding the cache, rounded to six decimals — and `none` otherwise, which
+the dashboard shows as a dash and the dollar caps do not see. A row of zeros
+there **is** a price: it is you declaring a free model, and the run records
+`estimated` at $0.00. The rows are yours to write, keyed `provider/model`, in
+USD per 1,000,000 tokens like the `openai` rows (`input`, `cached_input` and
+`output` are required; `cache_write` may be left out, and reads as 0):
+
+```json
+"opencode": {"pdm_ai/glm-5.3-flash": {"input": 0.033, "cached_input": 0.033, "output": 0.14, "cache_write": 0}}
+```
+
+`install.sh` copies `config/pricing.example.json` — which ships an empty
+`opencode` block and a note — only when `config/pricing.json` does not exist
+yet, so on an install that already has one the block is added by hand.
+`agentloop resolve-pricing` rewrites the `openai` block only and leaves
+`opencode` alone: the CLI's catalog is the CLI's source, and a custom
+provider's price is the operator's, not something a public list carries.
+`agentloop platforms` and `status` name the enabled OpenCode models priced in
+neither place as `unpriced`; the job editor says so beside the model too.
 
 **The price table keeps itself current.** `install.sh` seeds
 `config/pricing.json` from `config/pricing.example.json`, and from there the
@@ -912,10 +1075,16 @@ block; a run that ended on a quota refusal (`rate_limited`, outside the
 failure backoff) marks the fuller window spent until its own reset, when the
 refusal's rollout still reports the windows — a rollout that carries none
 leaves the file as it was. The gate is per platform: a spent Claude window
-never holds a Codex run back, nor the reverse.
+never holds a Codex run back, nor the reverse. OpenCode has no block at all:
+each provider has its own API, nothing on the stream or in the export reports
+a window, so the gate never holds an OpenCode run back and `agentloop usage`
+says so. A provider's quota refusal would arrive as an `APIError` with
+`statusCode: 429` (inferred from the shape of the measured 401, not measured
+itself) and end the run `rate_limited`, outside the failure backoff like the
+other two; with no window to mark, the next run comes at the job's interval.
 
-**Security analyses** run on either platform. The block's own `platform` wins,
-else the project's. On OpenAI the engine runs the deterministic phase
+**Security analyses** run on any of the three platforms. The block's own
+`platform` wins, else the project's. On OpenAI the engine runs the deterministic phase
 (`agentloop security prepare`) itself, in the run's worktree, before
 launching the agent — the Codex shell tool cannot be trusted to wait for it —
 and the prompt says so; the prompt names the skill by file path
@@ -925,9 +1094,23 @@ sentence is the only door. On Claude Code `prepare` stays the agent's own
 first command and the `Agent` tool is closed at launch, as before. The
 permission default is `full-access`: the sandbox modes
 cannot write the ledger, which lives outside the worktree. `agentloop skills`
-links the skills into `~/.codex/skills` too, when that home exists.
-`agentloop status` prints both platforms' readiness, and for Codex the age of
-the catalog and of the price table and the slugs still unpriced.
+links the skills into `~/.codex/skills` too, when that home exists. On OpenCode
+the engine runs `prepare` itself before the launch, as on OpenAI (the CLI's
+`bash` tool does wait for a command — measured — but its ceiling was not
+measured, and `prepare` can take minutes on a large repository); the prompt
+names the skill by name, since the agent sees `~/.claude/skills`, and by path
+too, for a machine where the link is missing; and the derived job's
+`disallowed_tools: Agent` becomes `task: deny` in the permission block, so
+there are no subagents by rule, not by plea, and the prompt only states it.
+Nothing to link: OpenCode reads `~/.claude/skills`, where `agentloop skills`
+already puts them. The permission default is `full-access` here too. A model
+the catalog marks as making no tool calls cannot run an analysis (it could
+neither read the checklist nor re-report a finding), so a block that names one
+falls back to the first enabled model that can, with a warning. `agentloop
+status` prints all three platforms' readiness: for Codex the age of the
+catalog and of the price table and the slugs still unpriced; for OpenCode the
+credentials and providers, the catalog's age and size, and the enabled models
+still unpriced.
 
 ---
 
@@ -1356,10 +1539,21 @@ job the same way. `default_profile` and `min_severity` belong to the
 **dashboard** alone — the profile Analyse offers first, and a display floor —
 and no part of the engine looks at either.
 
-`platform` — `anthropic`, `openai`, or empty to inherit the project's — decides
-which CLI runs the analysis; with it, `model`, `effort` and `permission_mode`
-take that platform's vocabulary and defaults (`full-access` on OpenAI, where the
-sandbox modes cannot write the ledger). See [Platforms](#platforms).
+`platform` — `anthropic`, `openai`, `opencode`, or empty to inherit the
+project's — decides which CLI runs the analysis; with it, `model`, `effort` and
+`permission_mode` take that platform's vocabulary and defaults (`full-access`
+on OpenAI, where the sandbox modes cannot write the ledger, and on OpenCode,
+where it is the only mode with a shell). See [Platforms](#platforms).
+
+On `"platform": "opencode"` the derived job is the same job with the
+platform's vocabulary: its `disallowed_tools: Agent` is translated to `task:
+deny` in the permission block the run launches with, so there are no
+subagents by rule (on Claude Code the tool is closed by flag; on Codex only
+the prompt forbids it); `prepare` runs engine-side, in the worktree, before
+the agent is launched, as on OpenAI; and the prompt names the skill by name
+and by path. Nothing to link: OpenCode reads `~/.claude/skills`. A `model`
+that makes no tool calls (the catalog says) is refused for an analysis and
+falls back, with a warning, the way a model switched off in Settings does.
 
 `model` left empty means the first model switched on for that platform in
 [Settings](#settings), and a model switched off there falls back to the same
@@ -1626,15 +1820,22 @@ the order the steps have to be taken.
   *Not found on the launchd PATH*, and the field under it is the fix — type
   another path and it is saved when you leave the field, **Detect** goes back
   to detection. A binary that is not there shows the install command instead.
-- **Session** — the live answer of `claude auth status --json` or `codex login
-  status`: *Signed in as me@example.com · max plan*, *Logged in using ChatGPT*,
-  or *Not signed in* with the command to run, and how long ago it was checked.
-  All three cards are checked when the page opens; **Test** asks again. Nothing
-  from this zone is stored — the engine asks the same question before every run.
+- **Session** — the live answer of `claude auth status --json`, `codex login
+  status` or, on OpenCode, `opencode models --pure`: *Signed in as
+  me@example.com · max plan*, *Logged in using ChatGPT*, *0 credentials ·
+  providers: opencode, pdm_ai* (the count from `opencode auth list`, the
+  providers from the catalog: OpenCode is a CLI of providers, not of one
+  account, and it is ready when it lists a model to run), or *Not signed in* /
+  *no usable provider* with the command to run, and how long ago it was
+  checked. All three cards are checked when the page opens; **Test** asks
+  again. Nothing from this zone is stored — the engine asks the same question
+  before every run.
 - **Models** — the catalog loads on its own once the session test passes:
   on OpenAI that is `codex debug models`, with the price per million tokens
   beside each slug (or *no price*), its effort range and a deprecated slug's
-  successor; on Anthropic it is the ids the installed CLI knows. **Refresh**
+  successor; on OpenCode it is `opencode models --verbose`, with the provider,
+  the price and the variants beside each id, and *no tools* on a model that
+  makes no tool calls; on Anthropic it is the ids the installed CLI knows. **Refresh**
   reads it again, and **Load models** takes its place when the first load
   failed. Every model has a switch, and only the ones switched on reach the
   job editor. A model in use says how many enabled jobs run on it; one you
@@ -1660,15 +1861,17 @@ install and git-ignored like your jobs:
   "platforms": {
     "anthropic": {"enabled": true,  "bin": "", "models": ["claude-opus-5", "claude-sonnet-5"]},
     "openai":    {"enabled": true,  "bin": "", "models": ["gpt-5.6-luna"]},
-    "opencode":  {"enabled": false, "bin": "", "models": []}
+    "opencode":  {"enabled": true,  "bin": "", "models": ["pdm_ai/glm-5.3-flash"]}
   }
 }
 ```
 
 `bin` empty means detection — for `claude`, `~/.local/bin/claude` first, then
 `launchd`'s `PATH`; for `codex` and `opencode`, the `PATH` first, then the
-usual install path. `AGENTLOOP_CLAUDE_BIN` and `AGENTLOOP_CODEX_BIN` still win
-over both, which is what the tests and a stand-in CLI use. `models` are exact
+usual install path (`~/.opencode/bin/opencode`, where OpenCode's own installer
+puts it, is looked at before Homebrew's). `AGENTLOOP_CLAUDE_BIN`,
+`AGENTLOOP_CODEX_BIN` and `AGENTLOOP_OPENCODE_BIN` still win over both, which
+is what the tests and a stand-in CLI use. `models` are exact
 ids, in the order they were switched on, and the first one is the platform's
 default — what `create` gives a job with no `model`, and what a `security`
 block with none runs on. The file is written on first use: an install that
@@ -1691,6 +1894,8 @@ agentloop platform disable openai          # never refused; names the enabled jo
 agentloop platform set-bin openai ~/.local/bin/codex    # must be executable; no path = back to detection
 agentloop platform models openai           # refreshes the catalog and prints it with `enabled` per model
 printf '["gpt-5.6-luna"]' | agentloop platform set-models openai   # a new id must be in the catalog
+agentloop platform enable opencode         # the same six verbs on any platform; this check runs `opencode models --pure`
+printf '["pdm_ai/glm-5.3-flash"]' | agentloop platform set-models opencode   # provider/model ids, from the catalog
 ```
 
 `agentloop platforms` reports it all in one object — `supported`, `enabled`,
@@ -1702,12 +1907,6 @@ that has since been switched off is not rewritten: the editor flags the value
 *(disabled in Settings)*, the card and the row carry a chip, and the run is
 skipped at launch with the reason in `tick.log`.
 
-**OpenCode, in this version,** is listed and found — the card shows the binary
-and its version, or `brew install opencode` — and nothing else: the session
-test, the model list and the runs arrive with the OpenCode engine, a later
-release. A job edited by hand onto `opencode` is refused at launch with
-`opencode is not supported yet`.
-
 ---
 
 ## Dashboard
@@ -1717,14 +1916,21 @@ release. A job edited by hand onto `opencode` is refused at launch with
   spend vs cap, and **Run now / Enable / Disable / Edit / Delete**. Destructive or
   wasteful actions confirm first.
   The editor chooses the **platform first, then the model** — Anthropic
-  (Claude Code) or OpenAI (Codex CLI) — and every list it offers (models,
-  effort levels, permission modes) is that platform's, read from
+  (Claude Code), OpenAI (Codex CLI) or OpenCode — and every list it offers
+  (models, effort levels, permission modes) is that platform's, read from
   `/api/models`; the editor offers only the platforms and models switched on
   in Settings, and a job whose own value was switched off since sees it
-  flagged *(disabled in Settings)* rather than rewritten. On OpenAI a model
-  without a price is marked, Interactive is off and the Limits pane says the
-  cost is estimated. A card names the platform only when it is OpenAI, and
-  carries a *platform disabled* / *model disabled* chip when its value is off.
+  flagged *(disabled in Settings)* rather than rewritten. On OpenAI and on
+  OpenCode a model without a price is marked and Interactive is off (neither
+  CLI has a stdin protocol; `opencode run` reads stdin as part of the
+  prompt), and the Limits pane says how the cost is known — estimated on
+  OpenAI, the CLI's own figure on OpenCode — and that the per-run cap is
+  advisory. On OpenCode the model list names the provider beside each model
+  and marks one that makes no tool calls, and the effort control is the
+  model's own variants, with no *Faster*/*Smarter* captions: the stops are
+  named, not ranked. A card names the platform only when it is not
+  Anthropic, and carries a *platform disabled* / *model disabled* chip when
+  its value is off.
   A job holding a session from a run that was cut short says so right on the
   card — when it expires, and a **Resume** button when there is a session id
   to continue — rather than only a count on the Sessions tab below.
@@ -1733,10 +1939,16 @@ release. A job edited by hand onto `opencode` is refused at launch with
   pagination. The 🔍 on each row opens the run: did the precheck pass, which tools
   were blocked, a **timeline with one line per agent turn**, the final answer, and
   stderr.
-  A run on OpenAI carries an **OpenAI** badge (the model that ran on hover);
-  an estimated cost reads `~$0.03` and a run with no figure a dash, with the
-  basis on hover; the run dialog adds Platform and Tokens rows, and *Spent
-  today* names its estimated share.
+  Every run carries its platform's badge — **OpenAI**, **OpenCode**, and a
+  quieter **Anthropic** — with the model that ran on hover; a reported cost
+  reads `$0.03`, an estimated one `~$0.03` and a run with no figure a dash,
+  with the basis on hover; the run dialog adds Platform and Tokens rows, and
+  *Spent today* names its estimated share. A finished run's Terminal tab ends
+  with the command that reopens the session by hand in the CLI it ran on:
+  `claude --resume <session>`, `codex exec resume <session>` or `opencode run
+  --dir <run dir> -s <session>` — on OpenCode `--dir` has to be the directory
+  the session was born in, because a resume from any other directory hangs
+  for ever without a byte (measured).
 - **Sessions** — every run directory still on disk, kept because its session
   was cut short or still holds work that exists on no remote; see [Sessions
   that are still open](#sessions-that-are-still-open). Size, age and time left
@@ -1802,8 +2014,8 @@ agentloop worktree-drop <id> <stamp>   # discard a preserved run dir for good
 agentloop security analyze [--detach] <project> <repo> <branch> [profile]
                                #   run an analysis (see Security analysis)
 agentloop security-branches <project> <repo>   # branches that checkout has
-agentloop resolve-models [anthropic|openai]  # refresh the model catalogs (both, without an argument)
-agentloop resolve-pricing    # refresh config/pricing.json from the price source (daily on its own)
+agentloop resolve-models [anthropic|openai|opencode]  # refresh the model catalogs (all three, without an argument)
+agentloop resolve-pricing    # refresh config/pricing.json's openai rows from the price source (daily on its own); the opencode rows are yours and are left alone
 agentloop platforms          # what each platform offers, whether it is ready, and what Settings switched on
 agentloop platform check|enable|disable|set-bin|models|set-models <platform> [path]
                                #   what Settings › Platforms does: probe a CLI, switch a platform
@@ -1817,7 +2029,11 @@ agentloop install | uninstall
 Environment overrides: `AGENTLOOP_PORT`, `AGENTLOOP_CONFIG`,
 `AGENTLOOP_DATA`, `AGENTLOOP_CLAUDE_BIN`, `AGENTLOOP_CLAUDE_CONFIG_DIR`,
 `AGENTLOOP_CODEX_BIN`, `AGENTLOOP_OPENCODE_BIN` (the three `_BIN` variables
-win over the path set in Settings), `CODEX_HOME` (this one is the Codex CLI's own),
+win over the path set in Settings; a stand-in for the tests, or one specific
+binary for the scheduled runs), `CODEX_HOME` (this one is the Codex CLI's own),
+`AGENTLOOP_OPENCODE_DEADLINE` (seconds each `opencode models`, `auth list`
+and `export` call may take before it counts as hung; default 30, twice that
+for `models --verbose`; the server's first in-request resolve uses 10),
 `AGENTLOOP_PRICING_URL` (where the price table refreshes from),
 `AGENTLOOP_PYTHON`, `AGENTLOOP_JQ`, `AGENTLOOP_LOG_MAX` (log rotation
 threshold, default 4 MiB), `AGENTLOOP_HOOK_TIMEOUT`, `AGENTLOOP_LOCK_GRACE`,

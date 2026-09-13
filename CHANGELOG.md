@@ -30,10 +30,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configured in that CLI (providers with their own keys, the free Zen
   models) were out of reach of every job.
   - The stand-in and the fixtures: `test/fake-opencode` emits the measured
-    shapes (a complete run, an undeclared ending, a dirty tree, a hang, an
-    auto-rejected permission, a rule denial, an unknown model, a rate
-    limit) and answers `--version`, `models`, `auth list` and `export`;
-    `test/fixtures/opencode/` holds the measurements the tests read.
+    shapes (a complete run, an undeclared ending, a dirty tree, a hang, a
+    CLI that never writes a byte, an auto-rejected permission, a rule
+    denial, an unknown model, a rate limit) and answers `--version`,
+    `models`, `auth list` and `export`, recording the argv and the `--dir` it
+    was launched with; `test/fixtures/opencode/` holds the measurements the
+    tests read.
   - The normalizer, `bin/platforms/opencode_stream.py`: the OpenCode events
     become the stream-json every reader here already speaks -- `text` an
     assistant message, a completed `tool_use` a tool_use and its result at
@@ -44,21 +46,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     an error result with its `statusCode`; an EOF after a rule denial is
     left to the salvage path, only an auto-rejected ask ends the run as an
     error. The first line is out the moment the CLI's first event arrives,
-    flushed, because the watchdog now reads an empty file as a dead run.
-    (the flush is pinned by a test that runs the normalizer without -u)
-  - The catalog: `agentloop resolve-models opencode` reads `opencode models
-    --verbose` into `config/models.json` (id, provider, name, price, whether
-    it is priced at all, context, variants, tool calls), refreshed daily
-    with the other two and kept, stamped stale, when a refresh lists
-    nothing; `platform check opencode` is ready when the CLI lists a model
-    and names the credentials and the providers. `run_bounded` puts a
-    deadline under the two CLI calls a hung OpenCode could otherwise turn
-    into a hung Settings page; a CLI that hangs past its deadline is reported
-    as a timeout, not as a missing provider, and the deadline ends the CLI's
-    whole process group.
-  - The table: `opencode` is a running platform (`platform_known`), with
-    two permission modes that say what the CLI enforces (`full-access`, the
-    default, and `read-only`: there is no sandbox, so no "workspace" mode
+    flushed, because the watchdog now reads an empty file as a dead run
+    (the flush is pinned by a test that runs the normalizer without `-u`).
+  - The catalog and the readiness check: `agentloop resolve-models opencode`
+    reads `opencode models --verbose` into `config/models.json` (id,
+    provider, name, price, whether it is priced at all, context, variants,
+    tool calls), refreshed daily with the other two and kept, stamped stale,
+    when a refresh lists nothing; `platform check opencode` is ready when the
+    CLI lists a model, and names the credentials and the providers.
+    `run_bounded` puts a deadline (`AGENTLOOP_OPENCODE_DEADLINE`, 30 s;
+    double for `models --verbose`) under every CLI call a hung OpenCode could
+    otherwise turn into a hung Settings page; a CLI that hangs past it is
+    reported as a timeout, not as a missing provider, and the deadline ends
+    the CLI's whole process group.
+  - The platform table: `opencode` is a running platform (`platform_known`),
+    with two permission modes that say what the CLI enforces (`full-access`,
+    the default, and `read-only`: there is no sandbox, so no "workspace" mode
     that would promise one), the model's own `variants` as its effort
     vocabulary (validated here: the CLI accepts anything in silence), the
     job's `allowed_tools`/`disallowed_tools` translated into the permission
@@ -73,9 +76,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     stream is translated and goes down the FIFO for either, refuses an
     OpenCode run that cannot start (no usable provider, an id outside the
     catalog, a Codex mode, `interactive`) before a slot is spent, drops an
-    effort the model's catalog entry does not list (the CLI would accept it
-    in silence), hands the permission block to the CLI in its environment,
-    and reads the model that ran from `opencode export` at the close.
+    effort the model's catalog entry does not list, and hands the
+    permission block to the CLI in its environment
+    (`OPENCODE_CONFIG_CONTENT`), with every note the translation makes -- a
+    tool the table does not know, a pattern widened or dropped -- in
+    `tick.log` before the launch.
   - A per-run cap over an unknown cost now says so. `max_budget_usd`
     compared `${cost:-0}` with 90% of the cap, so a run whose cost nobody
     knows (an unpriced model, on any platform) never fired the BUDGET
@@ -84,29 +89,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     A run that ended without a final event (stopped, killed) is not told
     its cap was not applied: its cost is unknown because it died, not
     because the model has no price.
-  - Configuration: `platform: opencode` is now a value `set-field` and
-    `create` accept for a job, validated like the other two -- moving a job
-    onto it rewrites a model, an effort or a permission mode the platform
-    does not know to its defaults and says so, and `set-field model`
-    validates the value against the OpenCode catalog. The derived security
-    job accepts `opencode` too (previously reachable only by hand-editing
-    `projects.json`, since `project-set` refused it as a project's own
-    platform) and now refuses a model the catalog marks as making no tool
-    calls, falling back the way a model switched off in Settings already does.
-    `config/platforms.json`'s seed treats OpenCode exactly as it treats the
-    other two, rather than always seeding it disabled; `project-set` takes
-    `platform: opencode` on a project and on its security block.
-  - `/api/models` carries the OpenCode catalog per model: the provider, the
-    price per million (the CLI's own, or the operator's row in
-    `config/pricing.json`'s new `opencode` block, or none), the variants as
-    the effort ladder, whether the model makes tool calls. `agentloop
-    platforms`, `status` and `usage` say what they say for the other two,
-    OpenCode's way: the catalog's age, the enabled models still unpriced,
-    and that there are no usage windows to wait for; the first `/api/models`
-    on an install whose catalog is not resolved yet resolves it through the
-    detected binary, with a short deadline (`OPENCODE_RESOLVE_DEADLINE`, 10 s)
-    so a hung CLI leaves its timeout stub instead of a 30-second hang on
-    every request.
+  - Configuration: `platform: opencode` is now a value `set-field`, `create`
+    and `project-set` (on a project and on its security block) accept,
+    validated like the other two -- moving a job onto it rewrites a model, an
+    effort or a permission mode the platform does not know to its defaults
+    and says so, and `set-field model` validates the value against the
+    OpenCode catalog. The derived security job refuses a model the catalog
+    marks as making no tool calls, falling back the way a model switched off
+    in Settings already does. `config/platforms.json`'s seed treats OpenCode
+    exactly as it treats the other two, rather than always seeding it
+    disabled.
+  - Cost, and what the server and the terminal say: a run on a model the
+    CLI's catalog prices records `reported` with the CLI's own figure; one
+    the catalog prices at zero -- unknown, never free: a provider with no
+    price configured lists the same zeros as a free model -- is estimated
+    from the operator's row in `config/pricing.json`'s new `opencode` block
+    (a row of zeros declares a free model; `resolve-pricing` never touches
+    the block) and records `none` otherwise. `/api/models` carries the
+    catalog per model (the provider, the price per million from either
+    source or none, the variants as the effort ladder, whether the model
+    makes tool calls); `agentloop platforms`, `status` and `usage` say what
+    they say for the other two, OpenCode's way: the catalog's age, the
+    enabled models still unpriced, and that there are no usage windows to
+    wait for. The first `/api/models` on an install whose catalog is not
+    resolved yet resolves it through the detected binary, with a short
+    deadline (`OPENCODE_RESOLVE_DEADLINE`, 10 s) so a hung CLI leaves its
+    timeout stub instead of a 30-second hang on every request.
   - Security analyses run on OpenCode: the derived job's `Agent` in
     `disallowed_tools` closes the `task` tool by rule, `prepare` runs
     engine-side before the agent (the tool's own timeout was not measured
@@ -115,13 +123,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - The dashboard: OpenCode in the Platform combo of the three editors
     (flat model list naming the provider, the model's variants as the
     effort ladder, the two modes, Interactive off, the cost note per
-    platform), the badge on cards, tables and the run modal, and the
-    Settings card doing what the other two do (Test, the catalog with
-    provider, price, variants and "no tools", the switch) instead of
+    platform), the badge on cards, tables and the run modal, the reopen
+    hint on a finished run (`opencode run --dir <run dir> -s <session>`),
+    and the Settings card doing what the other two do (Test, the catalog
+    with provider, price, variants and "no tools", the switch) instead of
     "Coming soon"; the Settings session line, the effort captions (hidden
     by a rule of their own: the author `display` outranks `[hidden]`) and
     the security help read right for a platform whose variants are named
     rather than ranked.
+  - `install.sh` names the CLI when it finds it; the README's *Platforms*
+    table has its third column, and *Settings*, *Jobs*, *Models*, *Effort*,
+    *Budgets*, the *Security block* and *Tests* say what OpenCode does
+    differently.
 
 - **Settings › Platforms, and `config/platforms.json`: a job may only pick a
   platform and a model somebody switched on.** The Settings item comes out of
