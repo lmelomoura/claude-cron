@@ -783,7 +783,7 @@ def test_the_security_pane_follows_its_effective_platform(srv, tmp_path):
     app = _app_js(srv)
     deps = "\n".join(_plainfn(page, n) for n in
                      ("applyPlatformToSecurity", "secEffectivePlatform", "effortSet", "effortGet",
-                      "ladderOf", "modelOptions"))
+                      "ladderOf", "modelOptions", "paintEffortEnds"))
     # modelEnabled and DISABLED_SUFFIX: modelOptionsFor reads both for the
     # `current` value the pane now hands it on a re-apply (Task 9), so a model
     # Settings switched off is shown flagged instead of silently dropped.
@@ -3376,7 +3376,7 @@ def test_the_card_and_the_row_show_the_platform_chip(srv):
     assert "platformChip(platformState(j, projById(j.project || \"\"), AL.PLATFORMS))" in _plainfn(js, "jobCard")
     assert "platformChip(platformState(j, projById(j.project || \"\"), AL.PLATFORMS))" in _plainfn(js, "jobRow")
     for name in ("platformOptions", "registryKnown", "hiddenModelCount", "platformState", "platformChip",
-                 "PLATFORM_LABELS", "modelEnabled", "DISABLED_SUFFIX"):
+                 "PLATFORM_LABELS", "modelEnabled", "DISABLED_SUFFIX", "KNOWN_PLATFORMS", "platformKey"):
         assert name in js.split("window.ALApp = {", 1)[1], f"{name} is not on window.ALApp"
     assert "get PLATFORMS(){ return PLATFORMS; }" in _js(srv)
 
@@ -3511,6 +3511,9 @@ def test_the_settings_summary_and_the_status_chip(srv, tmp_path):
     console.log(JSON.stringify({
       summary: settingsSummary(P),
       one: settingsSummary({anthropic: {enabled: true, models_enabled: ["a"]}}),
+      allOn: settingsSummary({anthropic: {enabled: true, models_enabled: ["a"]},
+                               openai: {enabled: true, models_enabled: ["b"]},
+                               opencode: {enabled: true, models_enabled: ["c"]}}),
       on: platformStatus({supported: true, enabled: true}, {ready: true, bin_found: true}),
       off: platformStatus({supported: true, enabled: false}, {ready: true, bin_found: true}),
       nobin: platformStatus({supported: true, enabled: false}, {ready: false, bin_found: false}),
@@ -3522,6 +3525,7 @@ def test_the_settings_summary_and_the_status_chip(srv, tmp_path):
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out["summary"] == "2 of 3 platforms enabled · 3 models available to jobs"
     assert out["one"] == "1 of 3 platforms enabled · 1 model available to jobs"
+    assert out["allOn"] == "3 of 3 platforms enabled · 3 models available to jobs"
     assert [out[k]["label"] for k in ("on", "off", "nobin", "nosession", "planned", "unchecked")] == \
         ["Enabled", "Disabled", "Not installed", "Not signed in", "Coming soon", "Enabled"]
     assert out["nobin"]["cls"] == "off" and out["nosession"]["cls"] == "idle" and out["planned"]["cls"] == "disabled"
@@ -3681,6 +3685,48 @@ def test_note_from_output_keeps_only_the_lines_after_the_first(srv, tmp_path):
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out["skipped"] == "1 enabled job (u2) runs on openai and will be skipped until it is enabled again"
     assert out["plain"] == ""
+
+
+@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
+def test_the_session_line_only_prefixes_an_anthropic_account(srv, tmp_path):
+    """The engine already phrases Codex's ("Logged in using ChatGPT") and
+    OpenCode's ("N credentials -- providers: ...") own checks; only
+    Anthropic's answers a bare email-and-plan that needs "Signed in as " in
+    front of it. sessionBlock used to guess this by sniffing the string
+    (startsWith("Logged in")) -- the rule is the platform now, so OpenCode's
+    very different wording is not mistaken for Codex's."""
+    js = _app_js(srv)
+    deps = "\n".join(_plainfn(js, n) for n in ("el", "sessionBlock"))
+    script = tmp_path / "session-block.js"
+    script.write_text("""
+    class FakeNode {
+      constructor(){ this.childNodes = []; }
+      appendChild(c){ this.childNodes.push(c); return c; }
+      get textContent(){ return this.childNodes.map(c => c.textContent || "").join(""); }
+      set textContent(v){ this.childNodes = [{textContent: String(v)}]; }
+    }
+    class FakeElement extends FakeNode {
+      constructor(tag){ super(); this.tagName = tag; this.className = ""; }
+    }
+    const document = {
+      createElement: (tag) => new FakeElement(tag),
+      createTextNode: (t) => ({textContent: String(t)}),
+    };
+    function icon(_name){ return document.createElement("span"); }
+    function button(){ return document.createElement("span"); }
+    function ago(_t){ return "just now"; }
+    const live = {busy: {}, checkedAt: {}};
+    """ + deps + """
+    const oc = sessionBlock({id: "opencode"}, {ready: true},
+      {ready: true, account: "2 credentials · providers: anthropic, pdm_ai"});
+    const an = sessionBlock({id: "anthropic"}, {ready: true},
+      {ready: true, account: "jd@example.com (Max plan)"});
+    console.log(JSON.stringify({oc: oc.textContent, an: an.textContent}));
+    """)
+    out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
+    assert "Signed in as" not in out["oc"], f"OpenCode's own wording must not be reworded: {out['oc']}"
+    assert "2 credentials · providers: anthropic, pdm_ai" in out["oc"]
+    assert "Signed in as jd@example.com (Max plan)" in out["an"], f"Anthropic still gets the prefix: {out['an']}"
 
 
 # Settings › Platforms (Task 9): the editors offer only what Settings switched
@@ -8936,17 +8982,22 @@ def test_effortsFor_reads_the_opencode_models_variants(srv, tmp_path):
     script = tmp_path / "efforts-for-opencode.js"
     script.write_text(deps + """
     const P = {opencode: {efforts: ["max","high","non-think","low"], models: [
-      {v: "pdm_ai/glm-5.3-flash", efforts: ["max","high","non-think"]}, {v: "opencode/big-pickle", efforts: []}]}};
+      {v: "pdm_ai/glm-5.3-flash", efforts: ["max","high","non-think"]}, {v: "opencode/big-pickle", efforts: []}]},
+      openai: {efforts: ["low","medium","high","xhigh","max"], models: [
+      {v: "gpt-5.5", efforts: []}]}};
     console.log(JSON.stringify({
       glm: effortsFor("opencode", "pdm_ai/glm-5.3-flash", P),
       pickle: effortsFor("opencode", "opencode/big-pickle", P),
       none: effortsFor("opencode", "", P),
+      oaEmpty: effortsFor("openai", "gpt-5.5", P),
     }));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True, text=True, check=True).stdout)
     assert out["glm"] == ["", "max", "high", "non-think"]
     assert out["pickle"] == [""], "a model without variants offers only the unset stop"
     assert out["none"] == ["", "max", "high", "non-think", "low"]
+    assert out["oaEmpty"] == ["", "low", "medium", "high", "xhigh", "max"], \
+        "unlike OpenCode, an OpenAI model with an empty reasoning list falls back to the platform union"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

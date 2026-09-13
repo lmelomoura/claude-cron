@@ -118,7 +118,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     platform), the badge on cards, tables and the run modal, and the
     Settings card doing what the other two do (Test, the catalog with
     provider, price, variants and "no tools", the switch) instead of
-    "Coming soon".
+    "Coming soon"; the Settings session line, the effort captions and the
+    security help read right for a platform whose variants are named
+    rather than ranked.
 
 - **Settings › Platforms, and `config/platforms.json`: a job may only pick a
   platform and a model somebody switched on.** The Settings item comes out of

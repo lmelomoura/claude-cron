@@ -249,12 +249,13 @@
   var FALLBACK_EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
   var EFFORTS = FALLBACK_EFFORTS;
   function effortsFor(platform, model, platforms) {
-    const p = (platforms || {})[platform || "anthropic"];
+    const key = platformKey(platform);
+    const p = (platforms || {})[key];
     if (!p) return FALLBACK_EFFORTS.slice();
     let levels = null;
-    if (platformKey(platform) !== "anthropic" && model) {
+    if (key !== "anthropic" && model) {
       const m = (p.models || []).find((x) => x && x.v === model);
-      if (m && Array.isArray(m.efforts)) levels = m.efforts;
+      if (m && Array.isArray(m.efforts) && (key === "opencode" || m.efforts.length)) levels = m.efforts;
     }
     if (!levels && Array.isArray(p.efforts) && p.efforts.length) levels = p.efforts;
     if (!levels || !levels.length) return [""];
@@ -2626,7 +2627,7 @@
     } else if (check.ready) {
       val.appendChild(icon("check"));
       const account = check.account || "unknown";
-      val.appendChild(document.createTextNode(account.startsWith("Logged in") ? account : "Signed in as " + account));
+      val.appendChild(document.createTextNode(r.id === "anthropic" ? "Signed in as " + account : account));
     } else if (!check.bin_found) {
       val.textContent = "\u2014 waiting for a binary";
     } else {
@@ -3043,5 +3044,5 @@
     setupBanner
   };
 })();
-/* ui-bundle: 3beb85369fdecb5990b94750becf199e53e0830e97f7f5131b71654a41fa2078 */
-/* ui-sources: 6e0358b5e6e89e8a819b87b1564c7e7b1a5a254a21778bc544007c1083d32852 */
+/* ui-bundle: ae5b0568aac08eb1f614141e30cf2a910d780d5b9b4754945fb2fb0c7c2cded6 */
+/* ui-sources: 20c3291e26bafeade05443e127d2cf014207e264929a6538658578bee5f90c6a */

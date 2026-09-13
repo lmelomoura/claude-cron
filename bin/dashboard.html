@@ -920,7 +920,7 @@ document.documentElement.dataset.theme =
       <p class="fieldhelp" id="ed-model-help">The model the agent uses to execute this job.</p></div>
     <div><label>Effort <span class="efflabel" id="ed-effort-label">—</span></label>
       <input type="range" id="ed-effort" class="effslider" min="0" max="5" step="1" value="0">
-      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+      <div class="effends" id="ed-effort-ends"><span>Faster</span><span>Smarter</span></div>
     </div>
   </div>
   <label>Permission mode</label>
@@ -1133,7 +1133,8 @@ document.documentElement.dataset.theme =
   <p class="fieldhelp">Anthropic is Claude Code, OpenAI is the Codex CLI, OpenCode is the OpenCode CLI (providers you
     configured there). Which CLI runs the analysis — the project's platform unless set here. On OpenAI
     nothing can close the agent's subagents by flag, so the prompt forbids them; the run is priced
-    from tokens like any Codex run.</p>
+    from tokens like any Codex run. On OpenCode the derived job closes the <code>task</code> tool by
+    rule, so there are no subagents, and the cost is what the CLI reports from its catalog.</p>
   <div class="row2">
     <div><label>Model</label>
       <div class="combo" id="sec-model-combo">
@@ -1150,7 +1151,7 @@ document.documentElement.dataset.theme =
       <p class="fieldhelp" id="sec-model-help">The model the analysis runs as — defaults to the opus family.</p></div>
     <div><label>Effort <span class="efflabel" id="sec-effort-label">—</span></label>
       <input type="range" id="sec-effort" class="effslider" min="0" max="5" step="1" value="0">
-      <div class="effends"><span>Faster</span><span>Smarter</span></div>
+      <div class="effends" id="sec-effort-ends"><span>Faster</span><span>Smarter</span></div>
     </div>
   </div>
   <label>Permission mode</label>
@@ -3579,6 +3580,13 @@ function effortSet(id,labelId,v,list){
 function effortGet(id,list){ return ALApp.effortFromIndex($(id).value, list||ladderOf(id)); }
 function setEffort(v){ effortSet("ed-effort","ed-effort-label",v); }
 function getEffort(){ return effortGet("ed-effort"); }
+// The effort slider's "Faster"/"Smarter" captions assume a ranked ladder --
+// true on Anthropic and OpenAI, where the built-in and the per-model lists
+// both run low to high. On OpenCode the stops are the model's own NAMED
+// variants, in the order the CLI lists them (max, high, non-think, ...): no
+// end is more or less capable, so the captions would lie there. Called from
+// every place that (re)builds an effort ladder for a platform.
+function paintEffortEnds(id, platform){ $(id).hidden = platform==="opencode"; }
 // What a platform governs in the job editor: the model list and default,
 // the effort ladder (the model's, on OpenAI), the permission modes and
 // default, Interactive (Codex exec has no stdin protocol) and the Limits
@@ -3600,6 +3608,7 @@ function applyPlatformToJobEditor(p, keep){
   const effVal=keep?effortGet("ed-effort"):"";                  // read against the OLD ladder
   edEfforts=ALApp.effortsFor(p, $("ed-model").value, PLATFORMS);
   setEffort(edEfforts.includes(effVal)?effVal:"");
+  paintEffortEnds("ed-effort-ends", p);
   const perms=ALApp.permissionsFor(p,PLATFORMS), curPerm=$("ed-perm").value;
   permCombo.set((keep&&perms.some(o=>o.v===curPerm))?curPerm:ALApp.defaultPermissionFor(p,"job"), perms);
   const noStdin=(p!=="anthropic"), ic=$("ed-interactive");
@@ -3632,7 +3641,7 @@ function paintLimitsNote(p, model){
   if(p==="anthropic"){ n.hidden=true; n.textContent=""; return; }
   const m=((PLATFORMS[p]||{}).models||[]).find(x=>x.v===model);
   let t = p==="opencode"
-    ? "Cost is what the OpenCode CLI reports from its catalog; a model without a price shows — and does not count towards dollar caps unless priced in config/pricing.json; the per-run cap is advisory on OpenCode (checked when the run ends)."
+    ? "Cost is what the OpenCode CLI reports from its catalog; a model without a price shows no cost and does not count towards dollar caps unless priced in config/pricing.json; the per-run cap is advisory on OpenCode (checked when the run ends)."
     : "Cost is estimated from tokens with config/pricing.json; the per-run cap is advisory on OpenAI (checked when the run ends).";
   if(m && m.priced===false) t += p==="opencode"
     ? " No price for "+model+" — dollar caps will not see this job's spend, and a max_budget_usd is not applied."
@@ -3665,11 +3674,12 @@ function applyPlatformToSecurity(p, keep){
   const effVal=keep?effortGet("sec-effort"):"";                 // read against the OLD ladder
   secEfforts=ALApp.effortsFor(p, $("sec-model").value, PLATFORMS);
   effortSet("sec-effort","sec-effort-label", secEfforts.includes(effVal)?effVal:"");
+  paintEffortEnds("sec-effort-ends", p);
   const perms=ALApp.permissionsFor(p,PLATFORMS), curPerm=$("sec-perm").value;
   secPermCombo.set((keep&&perms.some(o=>o.v===curPerm))?curPerm:ALApp.defaultPermissionFor(p,"security"), perms);
   $("sec-model-help").textContent = ({
     openai: "The Codex model the analysis runs as — empty takes the catalog's first ("+(dm||"none resolved yet")+"); a slug outside the catalog falls back to the platform's default, with a warning in tick.log.",
-    opencode: "one of the models switched on in Settings for OpenCode (provider/model).",
+    opencode: "One of the models switched on in Settings for OpenCode (provider/model).",
   })[p] || "The model the analysis runs as — defaults to the opus family.";
   $("sec-perm-help").textContent = ({
     openai: "full-access is the headless default here: the sandbox modes cannot write the ledger, which lives outside the worktree.",
@@ -3832,6 +3842,7 @@ function fill(j){
   // /api/models re-apply (applyPlatformToJobEditor's own `keep` path, below).
   modelCombo.set(j.model||ALApp.defaultModelFor(plat,PLATFORMS), modelOptions(plat, j.model||""));
   if(plat!=="anthropic") edEfforts=ALApp.effortsFor(plat, $("ed-model").value, PLATFORMS);
+  paintEffortEnds("ed-effort-ends", plat);
   setEffort(j.effort||"");
   $("ed-interactive").checked = (plat==="anthropic") && j.interactive===true;
   paintLimitsNote(plat, $("ed-model").value);

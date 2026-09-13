@@ -53,16 +53,20 @@ export const FALLBACK_EFFORTS = ["", "low", "medium", "high", "xhigh", "max"];
 export const EFFORTS = FALLBACK_EFFORTS;   // the pre-platforms name, still read at boot and by tests
 
 export function effortsFor(platform, model, platforms){
-  const p = (platforms || {})[platform || "anthropic"];
+  const key = platformKey(platform);
+  const p = (platforms || {})[key];
   if(!p) return FALLBACK_EFFORTS.slice();
   let levels = null;
-  if(platformKey(platform) !== "anthropic" && model){
+  if(key !== "anthropic" && model){
     const m = (p.models || []).find(x => x && x.v === model);
     // A model FOUND with an empty `efforts` array is a model without variants
-    // -- its own, explicit answer, kept even though it is falsy, rather than
-    // falling through to the platform's broader union below (that fallback is
-    // for a model NOT found at all, which leaves `levels` untouched at null).
-    if(m && Array.isArray(m.efforts)) levels = m.efforts;
+    // -- but that is only true on OpenCode, where opencode_catalog_efforts
+    // gives that same explicit, falsy answer for a model with no variants.
+    // OpenAI's openai_catalog_efforts treats an empty `supported_reasoning_levels`
+    // like the model was never found, so it falls through to the platform's
+    // broader union below the same way a model NOT found at all does (which
+    // leaves `levels` untouched at null).
+    if(m && Array.isArray(m.efforts) && (key === "opencode" || m.efforts.length)) levels = m.efforts;
   }
   if(!levels && Array.isArray(p.efforts) && p.efforts.length) levels = p.efforts;
   if(!levels || !levels.length) return [""];   // listed, but with no levels: nothing to offer beyond unset

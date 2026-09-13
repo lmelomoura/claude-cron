@@ -242,9 +242,10 @@ function sessionBlock(r, entry, check){
   else if(check.ready){
     val.appendChild(icon("check"));
     const account = check.account || "unknown";
-    // The engine already phrases codex's own answer as "Logged in ..." --
-    // prefixing "Signed in as " on top of that reads twice.
-    val.appendChild(document.createTextNode(account.startsWith("Logged in") ? account : "Signed in as " + account));
+    // Only Anthropic's check answers a bare email-and-plan that needs the
+    // prefix in front of it -- Codex ("Logged in using ChatGPT") and OpenCode
+    // ("N credentials -- providers: ...") already phrase their own answers.
+    val.appendChild(document.createTextNode(r.id === "anthropic" ? "Signed in as " + account : account));
   }
   else if(!check.bin_found){ val.textContent = "— waiting for a binary"; }
   else { val.appendChild(icon("xcircle")); val.appendChild(document.createTextNode(check.reason)); }
