@@ -455,6 +455,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The built-in history sweep reads the patches it needs and skips the
+  lines it does not.** `git log -p` now runs with `-U0` (the sweep reads
+  added lines only, and the context lines were most of the 7.4 GB the
+  measured repository produced), the loop tells the line kinds apart on the
+  bytes and decodes only the lines it keeps, and a chunk is handed to the
+  rule battery only when one C-level search per rule finds a candidate in
+  it. Same findings, a fraction of the time; measured on the repository
+  that timed the sweep out.
 - **The history sweep of the deterministic phase survives a byte that is not
   UTF-8, and no longer holds the whole history in memory.** On a real
   repository (21,607 commits, 6.4 GB of `git log -p`) the built-in secret

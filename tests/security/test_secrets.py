@@ -331,13 +331,25 @@ def test_the_history_sweep_runs_on_the_engines_time_budget(tmp_path, monkeypatch
     # `git log -p` is streamed through Popen now, with the deadline kept by
     # hand from the same constant: a clock that jumps past it on the second
     # line must end the sweep as a stated timeout, with the process killed.
+    class FakeStream:
+        """A patch of 140,000 lines: the deadline is read every 65,536 lines,
+        not on every one, so the clock below is consulted twice inside it."""
+        def __init__(self):
+            self._lines = iter([b"commit 0123456789abcdef0123456789abcdef01234567\n"]
+                               + [b"+AKIA" + b"IOSFODNN7EXAMPLE\n"] * 140000)
+
+        def __iter__(self):
+            return self._lines
+
+        def close(self):
+            pass
+
     class FakeLog:
         returncode = 0
         killed = False
 
         def __init__(self, *a, **kw):
-            self.stdout = iter([b"commit 0123456789abcdef0123456789abcdef01234567\n",
-                                b"+AKIA" + b"IOSFODNN7EXAMPLE\n"])
+            self.stdout = FakeStream()
 
         def kill(self):
             self.killed = True

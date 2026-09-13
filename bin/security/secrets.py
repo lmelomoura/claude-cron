@@ -514,6 +514,7 @@ def _path_from_diff_header(line: str):
 
 
 _COMMIT_HEADER = re.compile(r"^commit ([0-9a-f]{7,40})")
+_DIFF_HEADER_BYTES = _DIFF_HEADER_PREFIX.encode("utf-8")
 
 
 # PUBLIC: one sentence for one blind spot, whichever scanner hit it. The
@@ -618,8 +619,13 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         # is being read: git's advice on a bad revision is a few lines, but a
         # pipe that fills would stall the very stream this loop reads.
         errf = tempfile.TemporaryFile()
+        # `-U0`: no context lines. This sweep reads the `+` lines and nothing
+        # else, and the context is the bulk of a patch -- on the repository
+        # that timed this out (21,607 commits) the full patches were 7.4 GB.
+        # A PEM header and its body are still adjacent when both were added
+        # together, which is the only case `_pem_body_follows` ever saw here.
         proc = subprocess.Popen(
-            ["git", "-C", str(root), "log", "-p", "--no-color", "--no-merges",
+            ["git", "-C", str(root), "log", "-p", "-U0", "--no-color", "--no-merges",
              "--diff-filter=AM", rev],
             stdout=subprocess.PIPE, stderr=errf, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
@@ -650,7 +656,17 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     added = []
 
     def sweep():
-        for rule, severity, _ in _hits("\n".join(added)):
+        if not added:
+            return
+        text = "\n".join(added)
+        # One C-level pass per rule over the whole chunk before the per-line
+        # battery: a chunk with no candidate at all -- nearly every one --
+        # costs eight searches and no Python loop. The rules carry no anchor,
+        # so anything `_hits` would find on a line is found on the chunk too.
+        if not any(pattern.search(text) for _, _, pattern, _ in _RULES):
+            added.clear()
+            return
+        for rule, severity, _ in _hits(text):
             if sample_suppressed(path, rule, ignore):
                 continue
             rule = rename.get(rule, rule)
@@ -662,18 +678,27 @@ def scan_history(root, since_sha, ignore=(), rename=None):
 
     deadline = time.monotonic() + SCAN_TIMEOUT
     timed_out = False
+    # The prefixes are told apart on the bytes, and only the lines this sweep
+    # keeps are decoded: a hundred million lines of patch go through this
+    # loop on a large repository, and decoding and regex-matching every one
+    # of them was most of the sweep's time.
+    n = 0
     for raw in proc.stdout:
-        if time.monotonic() > deadline:
+        n += 1
+        if (n & 0xFFFF) == 0 and time.monotonic() > deadline:
             timed_out = True
             break
-        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-        commit_match = _COMMIT_HEADER.match(line)
-        if commit_match is not None:
+        if raw.startswith(b"commit "):
+            commit_match = _COMMIT_HEADER.match(raw.decode("utf-8", errors="replace"))
+            if commit_match is None:
+                continue
             sweep()
             commit_sha = commit_match.group(1)
             continue
-        header_path = _path_from_diff_header(line)
-        if header_path is not None:
+        if raw.startswith(_DIFF_HEADER_BYTES):
+            header_path = _path_from_diff_header(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+            if header_path is None:
+                continue
             sweep()
             path = header_path
             # The same globs the tree sweep obeys, applied to the same
@@ -701,9 +726,9 @@ def scan_history(root, since_sha, ignore=(), rename=None):
             continue
         if skip_path:
             continue
-        if not line.startswith("+") or line.startswith("+++"):
+        if not raw.startswith(b"+") or raw.startswith(b"+++"):
             continue
-        added.append(line[1:])
+        added.append(raw[1:].decode("utf-8", errors="replace").rstrip("\r\n"))
     if timed_out:
         try:
             proc.kill()
