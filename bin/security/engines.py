@@ -22,6 +22,7 @@ through a stream the run's transcript captures.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -79,14 +80,31 @@ PURGE = {
     "syft": (),
 }
 
-# ONE time budget for anything an analysis runs as a subprocess to sweep a
-# repository: an engine pass here, and the built-in history sweep's `git log
-# -p` in `secrets.scan_history`. It lives here, at the door to external
-# programs, because that is what both are. The two used to differ -- 300 s for
-# the built-in's git against 600 s for the engines -- so on a large repository
-# gitleaks' history pass could finish while the built-in's timed out, and the
-# secret row, which needs both, read `warning` for a limit two lines apart.
+# ONE time budget for an engine pass over the working tree -- every `run_json`
+# call that does not say otherwise. It lives here, at the door to external
+# programs, because that is what an engine is. The history passes have a
+# budget of their own, `HISTORY_TIMEOUT` below, and it is ONE budget for both
+# history sweeps for the reason this one used to be shared with the built-in's
+# `git log -p`: the two used to differ -- 300 s for the built-in's git against
+# 600 s for the engines -- so on a large repository gitleaks' history pass
+# could finish while the built-in's timed out, and the secret row, which needs
+# both, read `warning` for a limit two lines apart.
 SCAN_TIMEOUT = 600
+
+# THE HISTORY SWEEPS' OWN BUDGET, for the two passes that read `git log -p`:
+# gitleaks' `git` mode in `adapters.gitleaks_scan` and the built-in sweep in
+# `secrets.scan_history`. Separate from `SCAN_TIMEOUT` because the history is
+# not the tree: it is every patch ever committed, and it grows with the age of
+# the repository rather than with its size. Measured on a repository of 21,607
+# commits (372 MB, 969,185 lines): each history pass ran into the 600 s ceiling
+# above, in series, and neither produced a finding -- 1,200 s of the 1,721 s
+# `prepare` took, spent covering nothing. The `git log -p -U0` alone takes 55 s
+# there and the built-in sweep 277-390 s, so 1800 s is room to finish rather
+# than a ceiling to hit; and a sweep that still hits it now stops at a cursor
+# and continues in the next analysis (see `scan_history`) instead of starting
+# over. Overridable per install, in seconds, because the right number is a
+# property of the repositories an install analyses.
+HISTORY_TIMEOUT = int(os.environ.get("AGENTLOOP_SECURITY_HISTORY_TIMEOUT", "1800"))
 
 # The largest report this module will read off disk, in bytes.
 #

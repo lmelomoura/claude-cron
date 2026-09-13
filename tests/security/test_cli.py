@@ -3188,7 +3188,7 @@ def test_the_secret_row_is_a_warning_when_the_history_was_not_swept_in_full(
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
     monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
-                        lambda root, ignore_paths=(): ([], [gap, engine_note], history,
+                        lambda root, ignore_paths=(), since=None: ([], [gap, engine_note], history,
                                                        security_cli.adapters.TREE_OK))
     security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
                        "--db", str(db), "--offline"])
@@ -3216,7 +3216,7 @@ def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
     monkeypatch.setattr(security_cli.adapters, "engine_path",
                         lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
     monkeypatch.setattr(security_cli.adapters, "gitleaks_scan",
-                        lambda root, ignore_paths=(): (
+                        lambda root, ignore_paths=(), since=None: (
                             [], [engine_note], security_cli.adapters.HISTORY_OK,
                             security_cli.adapters.TREE_OK))
     security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
@@ -3226,6 +3226,246 @@ def test_the_secret_row_is_ran_only_when_the_full_history_was_swept(
     secret = [p for p in phases if p["name"] == "secrets"][0]
     assert secret["status"] == "ran"
     assert secret["by"] == "gitleaks+secrets"
+
+
+# ------------------------- the history sweep continues where it stopped
+#
+# In-process, like the groups above: the built-in sweep's clock has to be cut
+# after the first commit, which a subprocess boundary cannot reach. The cursor
+# and the cache live in `ledger.history_sweep`, read by `cmd_prepare` before the
+# secret phase and written after it; the classifier is what makes the cache
+# necessary, so the second analysis is closed and its checklist read.
+
+def _three_commit_repo(root):
+    """Oldest first: a key in `first.env`, a second key in `prod.env`, then a
+    commit that deletes both -- two history findings in two commits, so a cut
+    between them is visible, and a clean working tree."""
+    return git_repo(root, [
+        ("first", {"first.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("second", {"prod.env": f"AWS_ACCESS_KEY_ID={AWS_KEY}\n"}),
+        ("third", {"first.env": None, "prod.env": None, "README.md": "clean\n"}),
+    ])
+
+
+def _shas(root):
+    return subprocess.run(["git", "rev-list", "--reverse", "HEAD"], cwd=root,
+                          check=True, capture_output=True, text=True).stdout.split()
+
+
+def _sweeps_called_with(monkeypatch, cut_first=True):
+    """Record the cursor each built-in sweep is handed, and cut the FIRST one
+    after its first commit: the clock inside `scan_history` runs out at the
+    second commit's header, so the sweep returns the first commit's finding,
+    `reached` at that commit, and the gap note."""
+    real = security_cli.secrets.scan_history
+    cursors = []
+
+    def wrapped(root, since_sha, ignore=(), rename=None, budget=None):
+        cursors.append(since_sha)
+        if len(cursors) == 1 and cut_first:
+            clock = iter([0.0, 0.0])
+            with pytest.MonkeyPatch.context() as inner:
+                inner.setattr(security_cli.secrets.time, "monotonic",
+                              lambda: next(clock, 10 ** 9))
+                return real(root, since_sha, ignore, rename=rename, budget=5)
+        return real(root, since_sha, ignore, rename=rename, budget=budget)
+    monkeypatch.setattr(security_cli.secrets, "scan_history", wrapped)
+    return cursors
+
+
+def _prepare(db, aid, root, capsys):
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root),
+                       "--db", str(db), "--offline"])
+    return json.loads(capsys.readouterr().out)["coverage_note"]
+
+
+def _sweep_row(db, scanner):
+    conn = sqlite3.connect(str(db))
+    row = conn.execute("SELECT sha, findings FROM history_sweep WHERE project='web'"
+                       " AND repo='web' AND branch='main' AND scanner=?",
+                       (scanner,)).fetchone()
+    conn.close()
+    return (row[0], json.loads(row[1])) if row else (None, [])
+
+
+def _secret_phase(db, aid):
+    _, phases = _coverage_phases(db, aid)
+    return [p for p in phases if p["name"] == "secrets"][0]
+
+
+def test_a_sweep_cut_by_its_budget_continues_in_the_next_analysis(
+        tmp_path, monkeypatch, capsys):
+    """Two analyses of one repository, the built-in scanner alone. The first
+    sweep is cut after the first commit: it records that commit as the cursor
+    with the finding it read, and says so in the note. The second sweeps
+    `first..HEAD` only, carries the first commit's finding from the cache,
+    records HEAD, and says nothing about a gap -- and the carried finding is
+    `open` in the second analysis's checklist, never `fixed`: the classifier
+    reads a history finding that is not re-recorded as gone, which is the
+    reason the cache is re-recorded rather than merely remembered."""
+    root = _three_commit_repo(tmp_path / "repo")
+    first_sha, _second_sha, head = _shas(root)
+    db = tmp_path / "security.db"
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    cursors = _sweeps_called_with(monkeypatch)
+    first_fp = secret_fingerprint("aws-access-token", "first.env")
+    prod_fp = secret_fingerprint("aws-access-token", "prod.env")
+
+    one = open_analysis(db)
+    note = _prepare(db, one, root, capsys)
+    assert cursors == [None]
+    assert f"after 1 commit, at {first_sha[:7]}" in note, note
+    assert "the next analysis continues from there" in note
+    sha, cached = _sweep_row(db, "secrets")
+    assert sha == first_sha
+    assert [(f["occurrences"][0]["file"], f["commit_count"]) for f in cached] == [
+        ("first.env", 1)]
+    assert not any(k in f for f in cached for k in ("producer", "seen_by")), cached
+    assert _sweep_row(db, "gitleaks") == (None, []), "the engine did not run"
+    secret = {f["fingerprint"]: f for f in run(db, "findings", "--analysis", str(one))
+              if f["category"] == "secret"}
+    assert set(secret) == {first_fp}
+    assert _secret_phase(db, one)["status"] == "warning"
+    assert "stopped at its 5s budget" in _secret_phase(db, one)["note"]
+    run(db, "finish", "--analysis", str(one), "--state", "done")
+
+    two = open_analysis(db)
+    note = _prepare(db, two, root, capsys)
+    assert cursors == [None, first_sha], "the second sweep starts where the first stopped"
+    assert "did not complete" not in note, note
+    assert _sweep_row(db, "secrets")[0] == head
+    assert sorted(f["occurrences"][0]["file"] for f in _sweep_row(db, "secrets")[1]) == [
+        "first.env", "prod.env"]
+    secret = {f["fingerprint"]: f for f in run(db, "findings", "--analysis", str(two))
+              if f["category"] == "secret"}
+    assert set(secret) == {first_fp, prod_fp}
+    assert secret[first_fp]["producer"] == "secrets", "a cached built-in reading is the built-in's"
+    assert "in the git history" in secret[first_fp]["rationale"]
+    run(db, "finish", "--analysis", str(two), "--state", "done")
+    states = {f["fingerprint"]: f["state"]
+              for f in run(db, "checklist", "--analysis", str(two))["findings"]
+              if f["category"] == "secret"}
+    assert states == {first_fp: "open", prod_fp: "new"}, states
+    assert AWS_KEY not in db.read_bytes().decode("latin-1")
+
+    # A third analysis with nothing new: the sweep reads `HEAD..HEAD`, both
+    # findings come from the cache, and both stay open.
+    three = open_analysis(db)
+    _prepare(db, three, root, capsys)
+    assert cursors[-1] == head
+    run(db, "finish", "--analysis", str(three), "--state", "done")
+    states = {f["fingerprint"]: f["state"]
+              for f in run(db, "checklist", "--analysis", str(three))["findings"]
+              if f["category"] == "secret"}
+    assert states == {first_fp: "open", prod_fp: "open"}, states
+
+
+def test_the_secret_row_reads_ran_once_the_cut_sweep_has_caught_up(
+        tmp_path, monkeypatch, capsys):
+    """The same two analyses on the union path, with the engine staged: the
+    row is `warning` while the built-in sweep is cut and `ran` once it has
+    caught up, and the engine's own cursor moves to HEAD the moment its
+    history pass wrote a report -- the second call is handed it as `since`."""
+    root = _three_commit_repo(tmp_path / "repo")
+    first_sha, _second_sha, head = _shas(root)
+    db = tmp_path / "security.db"
+    engine_note = security_cli.adapters.ENGINE_NOTE.format(
+        version="gitleaks 8.30.1",
+        scope=f"the working tree and {security_cli.adapters.FULL_HISTORY}")
+    handed = []
+
+    def fake_engine(root, ignore_paths=(), since=None):
+        handed.append(since)
+        return ([], [engine_note], security_cli.adapters.HISTORY_OK,
+                security_cli.adapters.TREE_OK)
+    monkeypatch.setattr(security_cli.adapters, "engine_path",
+                        lambda name: "/usr/bin/gitleaks" if name == "gitleaks" else None)
+    monkeypatch.setattr(security_cli.adapters, "gitleaks_scan", fake_engine)
+    cursors = _sweeps_called_with(monkeypatch)
+
+    one = open_analysis(db)
+    _prepare(db, one, root, capsys)
+    assert handed == [None] and cursors == [None]
+    assert _secret_phase(db, one)["status"] == "warning"
+    assert _sweep_row(db, "gitleaks") == (head, [])
+    assert _sweep_row(db, "secrets")[0] == first_sha
+    run(db, "finish", "--analysis", str(one), "--state", "done")
+
+    two = open_analysis(db)
+    _prepare(db, two, root, capsys)
+    assert handed == [None, head] and cursors == [None, first_sha]
+    assert _secret_phase(db, two)["status"] == "ran"
+    assert _secret_phase(db, two)["by"] == "gitleaks+secrets"
+    assert _sweep_row(db, "secrets")[0] == head
+    secret = [f for f in run(db, "findings", "--analysis", str(two))
+              if f["category"] == "secret"]
+    assert sorted(f["occurrences"][0]["file"] for f in secret) == ["first.env", "prod.env"]
+    assert {f["producer"] for f in secret} == {"secrets"}
+
+
+def test_a_cursor_this_history_does_not_pass_through_starts_the_sweep_over(
+        tmp_path, monkeypatch, capsys):
+    """A rewritten history, or another repository analysed under the same
+    name: the ledger's cursor is not an ancestor of HEAD, so the cache is set
+    aside, the sweep reads the whole history, the note says so, and the row
+    is replaced by where this sweep got to."""
+    root = _three_commit_repo(tmp_path / "repo")
+    head = _shas(root)[-1]
+    db = tmp_path / "security.db"
+    conn = security_ledger.connect(db)
+    stale = security_cli.secrets._finding("aws-access-token", "critical", "stale.env",
+                                          [0], True, commit_count=4)
+    security_ledger.save_history_sweep(conn, "web", "web", "main", "secrets",
+                                       "0" * 40, [stale])
+    conn.close()
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    cursors = _sweeps_called_with(monkeypatch, cut_first=False)
+
+    aid = open_analysis(db)
+    note = _prepare(db, aid, root, capsys)
+    assert cursors == [None], "a cursor that is not an ancestor is not a cursor"
+    assert security_cli.HISTORY_RESTART_NOTE.format(
+        scanner="the built-in pattern scanner", sha7="0000000") in note, note
+    files = sorted(f["occurrences"][0]["file"]
+                   for f in run(db, "findings", "--analysis", str(aid))
+                   if f["category"] == "secret")
+    assert files == ["first.env", "prod.env"], "the stale cache was set aside"
+    sha, cached = _sweep_row(db, "secrets")
+    assert sha == head
+    assert sorted(f["occurrences"][0]["file"] for f in cached) == ["first.env", "prod.env"]
+    phase = _secret_phase(db, aid)
+    assert "started over from the first commit" in phase["note"]
+    assert phase["note"] in note
+
+
+def test_a_carried_finding_adds_the_commits_of_a_later_sweep(tmp_path, monkeypatch, capsys):
+    """The cache holds `prod.env` seen in 2 commits up to the cursor; the
+    commits since add it once more. The finding says 3, once, and its
+    severity is the graver of the two readings."""
+    root = _three_commit_repo(tmp_path / "repo")
+    first_sha, _second_sha, head = _shas(root)
+    db = tmp_path / "security.db"
+    conn = security_ledger.connect(db)
+    carried = security_cli.secrets._finding("aws-access-token", "high", "prod.env",
+                                            [0], True, commit_count=2)
+    security_ledger.save_history_sweep(conn, "web", "web", "main", "secrets",
+                                       first_sha, [carried])
+    conn.close()
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+    cursors = _sweeps_called_with(monkeypatch, cut_first=False)
+
+    aid = open_analysis(db)
+    _prepare(db, aid, root, capsys)
+    assert cursors == [first_sha]
+    secret = [f for f in run(db, "findings", "--analysis", str(aid))
+              if f["category"] == "secret"]
+    assert [f["occurrences"][0]["file"] for f in secret] == ["prod.env"]
+    assert "Seen in 3 commits in the history." in secret[0]["rationale"]
+    assert secret[0]["rationale"].count("Seen in") == 1
+    assert secret[0]["severity"] == "critical"
+    _sha, cached = _sweep_row(db, "secrets")
+    assert [(f["occurrences"][0]["file"], f["commit_count"]) for f in cached] == [
+        ("prod.env", 3)]
 
 
 def test_the_fallback_sbom_names_the_inventory_that_built_it(tmp_path, monkeypatch,
@@ -5480,3 +5720,46 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
 
     run(db, "finish", "--analysis", str(other), "--state", "done")
     assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
+
+
+def test_the_phases_run_at_once_and_the_progress_says_so(tmp_path, monkeypatch, capsys):
+    """Six phases of 0.3 s each used to be 1.8 s of wall-clock; on the
+    repository that measured this they were 1,721 s. They run at once now,
+    are read in the order they always were, and each one says when it is
+    done on stderr -- the channel the engine keeps as the run's .prepare
+    file, which the run dialog reads back."""
+    import time as clock
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    (root / "README").write_text("seed\n")
+    db = tmp_path / "security.db"
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+
+    def slow(value):
+        def phase(*a, **kw):
+            clock.sleep(0.3)
+            return value
+        return phase
+    monkeypatch.setattr(security_cli, "_scan_secrets",
+                        slow(([], [], 7, security_cli.PRODUCER_SECRETS, "warning")))
+    monkeypatch.setattr(security_cli.hygiene, "scan", slow([]))
+    monkeypatch.setattr(security_cli, "_scan_dependencies", slow(([], [], "osv", "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_iac", slow(([], [], "", "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_sbom", slow((None, [], "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_sast", slow(([], [], "", "skipped")))
+
+    aid = open_analysis(db)
+    t0 = clock.perf_counter()
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root), "--offline",
+                       "--db", str(db)])
+    elapsed = clock.perf_counter() - t0
+    assert elapsed < 1.2, f"the six phases took {elapsed:.2f}s: they did not run at once"
+    err = capsys.readouterr().err
+    assert "prepare: started secrets, hygiene, dependencies, sbom, iac, sast-prepass" in err
+    assert "prepare: hygiene done (" in err and "prepare: sast-prepass done (" in err
+    assert "prepare: all phases done (" in err
+    # Read in order, whatever finished first: the table keeps its shape.
+    _, phases = _coverage_phases(db, aid)
+    assert [p["name"] for p in phases] == [
+        "scope", "secrets", "hygiene", "dependencies", "sbom", "iac", "sast-prepass"]

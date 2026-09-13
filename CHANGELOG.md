@@ -455,6 +455,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The deterministic phase runs its scanners at once and says where it
+  is.** The secret sweeps, hygiene, the trivy pair, syft and semgrep ran
+  one after the other (1,721 s on the measured repository); they run at
+  once now, the two gitleaks passes and the two built-in sweeps included,
+  read in the order they always were, so the phase lasts its slowest
+  scanner. `prepare` writes a flushed line per phase event, and every
+  2,000 history commits, to the run's `.prepare` file, and the run dialog
+  shows the last one while the phase runs.
+- **The SAST pre-pass note names the files Semgrep could not fully parse**
+  (up to eight, then how many more), so a generated or vendored file among
+  them can go to `ignore_paths`; a count alone was nothing to act on.
+- **The history sweeps of the deterministic phase have a budget of their
+  own and a cursor.** `AGENTLOOP_SECURITY_HISTORY_TIMEOUT` (1800 s) bounds
+  the git history passes of both secret scanners, apart from the engines'
+  600 s; the built-in sweep walks the history oldest first and each
+  analysis sweeps only the commits since the last one it reached, carries
+  the history findings already found (under today's `ignore_paths`, not
+  yesterday's), and a sweep cut by its budget continues in the next
+  analysis instead of starting over; gitleaks' history pass takes the same
+  cursor through `--log-opts` once it has completed a full pass. Measured:
+  21,607 commits spent two 600 s budgets in series on every analysis and
+  covered nothing.
+- **The built-in history sweep reads the patches it needs and skips the
+  lines it does not.** `git log -p` now runs with `-U0` (the sweep reads
+  added lines only, and the context lines were most of the 7.4 GB the
+  measured repository produced), the loop tells the line kinds apart on the
+  bytes and decodes only the lines it keeps, and a chunk is handed to the
+  rule battery only when one C-level search per rule finds a candidate in
+  it. Same findings, a fraction of the time; measured on the repository
+  that timed the sweep out.
 - **The history sweep of the deterministic phase survives a byte that is not
   UTF-8, and no longer holds the whole history in memory.** On a real
   repository (21,607 commits, 6.4 GB of `git log -p`) the built-in secret

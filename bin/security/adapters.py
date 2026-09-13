@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 from . import deps, engines, ignores, osv, report, secrets, taxonomy
@@ -292,26 +293,30 @@ def _relative(path: str, root) -> str:
 
 
 def _finding(rule, path, lines, historical, commits):
-    where = "in the git history" if historical else "in the working tree"
-    rationale = (f"A credential of type {rule} was found {where}. Its value is "
-                 "deliberately not recorded anywhere in this report.")
-    if historical and commits > 1:
-        rationale += f" Seen in {commits} commits in the history."
-    return {
+    finding = {
         "fingerprint": secret_fingerprint(rule, path),
         "category": "secret",
         "rule": rule,
         "severity": SEVERITY_BY_RULE.get(rule, DEFAULT_SEVERITY),
         "title": f"{rule.replace('-', ' ')} committed to the repository",
-        "rationale": rationale,
-        # secrets.py's sentence, not a second copy of it: a credential found
-        # by the engine and one found by the built-in scanner are the same
-        # emergency, and two wordings for it would drift.
+        # secrets.py's sentences, not a second copy of them: a credential
+        # found by the engine and one found by the built-in scanner are the
+        # same emergency, and two wordings for it would drift. The rationale
+        # joined the remediation there when a third reader arrived that has
+        # to REBUILD it -- `cli._carry_history`, summing one finding's commit
+        # count across analyses.
+        "rationale": secrets.rationale_for(rule, historical, commits),
         "remediation": secrets.REMEDIATION,
         "occurrences": [{"file": path, "line": line, "snippet_hash": ""}
                         for line in lines],
         "historical": historical,
     }
+    if historical:
+        # Carried as a number beside the sentence, for the same reason
+        # `secrets._finding` carries it: the ledger's sweep cache hands this
+        # finding back to a later analysis, which adds its own commits to it.
+        finding["commit_count"] = int(commits)
+    return finding
 
 
 def _out_of_scope(path: str, ignore_paths) -> bool:
@@ -551,7 +556,7 @@ def _is_shallow(root) -> bool:
     return (marker / "shallow").exists()
 
 
-def gitleaks_scan(root, ignore_paths=()):
+def gitleaks_scan(root, ignore_paths=(), since=None):
     """Every secret gitleaks can find in `root`, tree and history.
 
     Returns `(findings, notes, history, tree)`. `findings` is None when
@@ -563,6 +568,22 @@ def gitleaks_scan(root, ignore_paths=()):
     credential both saw is one identity, not two entries whose remediations
     contradict each other. That merge is the caller's; this function reports
     what the engine saw and nothing about the other scanner.
+
+    `since` IS THE HISTORY CURSOR, a commit the previous analysis's history
+    pass had already read up to (`cli._scan_secrets` keeps it in the ledger,
+    per branch and per scanner). With one, the `git` pass is handed
+    `--log-opts <since>..HEAD` and reads only the commits since; without one
+    it reads the whole history, as it always did. The engine does not say
+    where it got to, so the caller advances the cursor to HEAD only when this
+    pass wrote a report (`history` is `HISTORY_OK`), and carries the history
+    findings of earlier analyses itself -- this function reports what THIS
+    pass saw. Measured on gitleaks 8.30.1: a range that names no commit
+    (`HEAD..HEAD`) exits 0 with `[]`, so an analysis with nothing new costs the
+    engine a walk and no findings. The `git` pass runs on
+    `engines.HISTORY_TIMEOUT`, the history passes' own budget, and the `dir`
+    pass on the engines' `SCAN_TIMEOUT` as before: the history grows with the
+    age of a repository, the tree with its size, and one number for both hit
+    the same ceiling twice in series on the repository that measured it.
 
     `history` IS WHAT THE HISTORY SWEEP ACTUALLY COVERED, one of the three
     `HISTORY_*` states above, and `tree` IS WHETHER THE TREE PASS WROTE A
@@ -664,11 +685,29 @@ def gitleaks_scan(root, ignore_paths=()):
                   # why that asymmetry is stated and not hidden.
                   "--max-target-megabytes",
                   str(secrets.GITLEAKS_MAX_TARGET_MEGABYTES)]
-        history, history_note = (
-            (None, HISTORY_UNREADABLE.format(reason=why))
-            if state == HISTORY_GONE
-            else engines.run_json("gitleaks", ["git", ".", *common], root))
-        tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
+        # The cursor rides in `--log-opts`, which gitleaks passes to its own
+        # `git log`; `<since>..HEAD` is the range the built-in sweep reads
+        # for the same cursor, so the two passes of one analysis cover the
+        # same commits.
+        log_opts = ["--log-opts", f"{since}..HEAD"] if since else []
+        # BOTH PASSES AT ONCE. They read the same checkout, each writes its
+        # own report file (`run_json` names it), and the history pass is the
+        # long one: on the measured repository it ran to its budget while the
+        # tree pass waited behind it. The recording order below is untouched
+        # -- history first, then tree -- because it is the order the results
+        # are READ in, not the order the processes finish.
+        if state == HISTORY_GONE:
+            history, history_note = None, HISTORY_UNREADABLE.format(reason=why)
+            tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                history_job = pool.submit(engines.run_json, "gitleaks",
+                                          ["git", ".", *log_opts, *common], root,
+                                          timeout=engines.HISTORY_TIMEOUT)
+                tree_job = pool.submit(engines.run_json, "gitleaks",
+                                       ["dir", ".", *common], root)
+            history, history_note = history_job.result()
+            tree, tree_note = tree_job.result()
 
     if history is None and tree is None:
         # BOTH reasons, not just the tree's. They are routinely different --
@@ -1930,8 +1969,13 @@ SAST_UNPLACED_NOTE = ("A further {count} {rules} loaded under namespaces no "
 # A file Semgrep could not parse was not analysed, whatever the rule count says
 # about its language. The engine's own message for it is NEVER quoted back:
 # that message is the file's source (see `engines.PURGE`).
-SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep, so "
-                   "part of what {they} {hold} was not analysed at all.")
+SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep ({listed}), "
+                   "so part of what {they} {hold} was not analysed at all; a "
+                   "generated or vendored file among them belongs in the "
+                   "project's ignore_paths.")
+# How many of the unparsed files the note names before it counts the rest:
+# enough to act on, not a directory listing.
+SAST_PARSE_LISTED = 8
 
 SAST_PREPASS_NOTE = ("Semgrep is a pre-pass here, not the SAST pass: it "
                      "matched patterns, and the analysis that follows is what "
@@ -2419,19 +2463,29 @@ def semgrep_breakdown(data):
     return coverage, unplaced
 
 
-def _semgrep_unparsed(data) -> int:
-    """How many distinct files Semgrep reported an error against.
+def _semgrep_unparsed(data) -> list:
+    """The distinct files Semgrep reported an error against, sorted.
 
-    The PATHS are counted, never the messages: `errors[].message` quotes the
-    file it could not parse (see `engines.PURGE`), which is why the note says
-    a number and not a reason.
+    The PATHS, never the messages: `errors[].message` quotes the file it
+    could not parse (see `engines.PURGE`), which is why the note names a
+    path and never a reason. Named rather than counted (as they used to be)
+    because a count is not actionable: an operator who reads "10 files"
+    cannot tell a generated bundle, which belongs in ignore_paths, from a
+    source file whose syntax the parser did not fully take.
     """
     errors = data.get("errors") if isinstance(data, dict) else None
     if not isinstance(errors, list):
-        return 0
-    return len({e.get("path") for e in errors
-                if isinstance(e, dict) and isinstance(e.get("path"), str)
-                and e.get("path").strip()})
+        return []
+    return sorted({e.get("path").strip() for e in errors
+                   if isinstance(e, dict) and isinstance(e.get("path"), str)
+                   and e.get("path").strip()})
+
+
+def _listed_paths(paths, limit=SAST_PARSE_LISTED) -> str:
+    """Up to `limit` paths, then how many more."""
+    shown = ", ".join(paths[:limit])
+    rest = len(paths) - limit
+    return shown if rest <= 0 else f"{shown} and {rest} more"
 
 
 # The `errors[].level` words that mean Semgrep RECOVERED and kept scanning.
@@ -2606,10 +2660,12 @@ def semgrep_notes(data, version: str, findings) -> list[str]:
             breakdown=", ".join(f"{lang} {n}" for lang, n in unplaced)))
     unparsed = _semgrep_unparsed(data)
     if unparsed:
+        count = len(unparsed)
         notes.append(SAST_PARSE_NOTE.format(
-            count=unparsed, files="file" if unparsed == 1 else "files",
-            they="it" if unparsed == 1 else "they",
-            hold="holds" if unparsed == 1 else "hold"))
+            count=count, files="file" if count == 1 else "files",
+            listed=_listed_paths(unparsed),
+            they="it" if count == 1 else "they",
+            hold="holds" if count == 1 else "hold"))
     notes.append(SAST_PREPASS_NOTE)
     if findings:
         notes.append(SAST_IDENTITY_NOTE)

@@ -100,7 +100,7 @@ def test_history_finds_a_key_that_was_deleted(tmp_path):
     run("git", "commit", "-qm", "remove")
 
     assert scan_tree(tmp_path, []) == ([], "", 0)
-    hist, note, _ = scan_history(tmp_path, None)
+    hist, note, _, _ = scan_history(tmp_path, None)
     assert note == ""
     assert len(hist) == 1
     assert hist[0]["historical"] is True
@@ -157,7 +157,7 @@ def test_history_attributes_the_correct_file_despite_a_decoy_diff_header_in_cont
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    hist, _, _ = scan_history(tmp_path, None)
+    hist, _, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert hist[0]["occurrences"][0]["file"] == "decoy.txt"
 
@@ -178,7 +178,7 @@ def test_history_attributes_a_path_containing_a_space(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    hist, _, _ = scan_history(tmp_path, None)
+    hist, _, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert hist[0]["occurrences"][0]["file"] == "my dir/secret file.env"
 
@@ -204,7 +204,7 @@ def test_history_counts_distinct_commits_for_a_rotated_credential(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "rotate")
 
-    hist, _, _ = scan_history(tmp_path, None)
+    hist, _, _, _ = scan_history(tmp_path, None)
     assert len(hist) == 1
     assert "2 commits" in hist[0]["rationale"]
     assert first_key not in repr(hist)
@@ -256,10 +256,10 @@ def test_the_history_sweep_obeys_the_same_ignore_globs(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    everything, _, _ = scan_history(tmp_path, None)
+    everything, _, _, _ = scan_history(tmp_path, None)
     assert {f["rule"] for f in everything} == {"aws_access_key", "github_token"}
 
-    filtered, note, _ = scan_history(tmp_path, None, ["tests/**"])
+    filtered, note, _, _ = scan_history(tmp_path, None, ["tests/**"])
     assert note == ""
     assert [f["occurrences"][0]["file"] for f in filtered] == ["prod.env"]
 
@@ -271,7 +271,7 @@ def test_a_history_sweep_that_times_out_says_so_instead_of_answering_clean(tmp_p
     def boom(*a, **kw):
         raise subprocess.TimeoutExpired(cmd="git", timeout=600)
     monkeypatch.setattr(subprocess, "run", boom)
-    findings, note, swept = scan_history(tmp_path, None)
+    findings, note, swept, _ = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note and "timed out" in note
     assert swept is False, "a sweep that did not complete must say so in the value too"
@@ -281,7 +281,7 @@ def test_a_history_sweep_that_cannot_run_git_says_so(tmp_path, monkeypatch):
     def boom(*a, **kw):
         raise OSError("no git on this machine")
     monkeypatch.setattr(subprocess, "run", boom)
-    findings, note, swept = scan_history(tmp_path, None)
+    findings, note, swept, _ = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note and "no git on this machine" in note
 
@@ -289,7 +289,7 @@ def test_a_history_sweep_that_cannot_run_git_says_so(tmp_path, monkeypatch):
 def test_a_root_that_is_not_a_git_checkout_is_a_stated_gap(tmp_path):
     """git exits non-zero, which `check=False` turned into an empty stdout and
     therefore into "this history is clean"."""
-    findings, note, swept = scan_history(tmp_path, None)
+    findings, note, swept, _ = scan_history(tmp_path, None)
     assert findings == []
     assert "did not complete" in note
     assert swept is False
@@ -303,59 +303,263 @@ def test_a_checkout_with_no_commits_is_an_empty_history_not_a_failed_sweep(tmp_p
     missing: the sweep is complete, the note says the history is empty, and
     the coverage row stays `ran` (see test_recall.py for the phase)."""
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, capture_output=True)
-    findings, note, swept = scan_history(tmp_path, None)
+    findings, note, swept, _ = scan_history(tmp_path, None)
     assert findings == []
     assert note == HISTORY_EMPTY_NOTE
     assert swept is True
     assert "did not complete" not in note
 
 
-def test_the_history_sweep_runs_on_the_engines_time_budget(tmp_path, monkeypatch):
-    """One constant, `engines.SCAN_TIMEOUT`, for the built-in's `git log -p`
-    and for every engine pass. The two used to be 300 s against 600 s, so on a
-    large repository gitleaks' history pass could finish while this one timed
-    out, and the secret row -- which needs both -- read `warning`.
+class FakeStream:
+    """A `git log -p` stream of `lines`, in bytes, as `Popen.stdout` yields
+    them; `closed` records the sweep hanging up on it."""
+    def __init__(self, lines):
+        self._lines = iter(lines)
+        self.closed = False
 
-    The fake answers `rev-list -n1 --all` with a commit. An empty stdout
-    there is `HISTORY_EMPTY_NOTE`, and `scan_history` returns before `git log
-    -p` is ever run -- which is what the first version of this test did: it
-    saw one call, never the one it names, and `timeout=300` on the `git log`
-    call kept it green. Both calls are asserted, in order, each on the
-    budget."""
-    seen = []
+    def __iter__(self):
+        return self._lines
 
-    def fake_run(cmd, **kw):
-        seen.append(kw.get("timeout"))
-        return subprocess.CompletedProcess(cmd, 0, stdout="abc\n", stderr="")
+    def close(self):
+        self.closed = True
 
-    # `git log -p` is streamed through Popen now, with the deadline kept by
-    # hand from the same constant: a clock that jumps past it on the second
-    # line must end the sweep as a stated timeout, with the process killed.
+
+def _fake_log(lines):
+    """A `subprocess.Popen` stand-in streaming `lines` and recording whether
+    the sweep killed it. Instances are kept on the class, so the test can read
+    them back after the sweep returns."""
     class FakeLog:
         returncode = 0
-        killed = False
+        instances = []
 
         def __init__(self, *a, **kw):
-            self.stdout = iter([b"commit 0123456789abcdef0123456789abcdef01234567\n",
-                                b"+AKIA" + b"IOSFODNN7EXAMPLE\n"])
+            self.args = a[0] if a else kw.get("args")
+            self.stdout = FakeStream(lines)
+            self.killed = False
+            FakeLog.instances.append(self)
 
         def kill(self):
             self.killed = True
 
         def wait(self):
             return 0
+    return FakeLog
 
-    clock = iter([0.0, 0.0, engines.SCAN_TIMEOUT + 1.0])
+
+COMMIT_A = "0123456789abcdef0123456789abcdef01234567"
+COMMIT_B = "89abcdef0123456789abcdef0123456789abcdef"
+
+
+def test_the_history_sweep_runs_on_the_history_budget(tmp_path, monkeypatch):
+    """One constant, `engines.HISTORY_TIMEOUT`, for the built-in's `git log
+    -p` -- the history passes' own budget, above the engines' `SCAN_TIMEOUT`,
+    because a history grows with a repository's age and not with its size.
+    This used to be `SCAN_TIMEOUT` itself, and before that 300 s against the
+    engines' 600 s, so on a large repository gitleaks' history pass could
+    finish while this one timed out, and the secret row -- which needs both --
+    read `warning`.
+
+    The fake answers `rev-list -n1 --all` with a commit. An empty stdout
+    there is `HISTORY_EMPTY_NOTE`, and `scan_history` returns before `git log
+    -p` is ever run -- which is what the first version of this test did: it
+    saw one call, never the one it names, and `timeout=300` on the `git log`
+    call kept it green. Both calls are asserted, each on the budget.
+
+    `git log -p` is streamed through Popen, with the deadline kept by hand
+    from the same constant: a clock that jumps past it inside the first
+    commit's patch ends the sweep as a stated cut, with the process killed and
+    -- since no commit was read whole -- no cursor and no findings: the
+    partly read commit's lines are not reported, or the next analysis, which
+    reads that commit whole, would count it twice."""
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc\n", stderr="")
+
+    # A patch of 140,000 lines: inside a commit the deadline is read every
+    # 65,536 lines, not on every one, so the clock is consulted at the header
+    # and then twice inside the patch. `--reverse` is on the argv: it is what
+    # makes a cut leave a cursor every later commit descends from.
+    FakeLog = _fake_log([f"commit {COMMIT_A}\n".encode()]
+                        + [b"+AKIA" + b"IOSFODNN7EXAMPLE\n"] * 140000)
+    clock = iter([0.0, 0.0, 0.0, engines.HISTORY_TIMEOUT + 1.0])
     from security import secrets as secrets_mod
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", FakeLog)
-    monkeypatch.setattr(secrets_mod.time, "monotonic", lambda: next(clock, engines.SCAN_TIMEOUT + 1.0))
-    findings, note, swept = scan_history(tmp_path, None)
-    assert seen == [engines.SCAN_TIMEOUT], seen
-    assert findings == [] and swept is False
-    assert f"timed out after {engines.SCAN_TIMEOUT}s" in note
+    monkeypatch.setattr(secrets_mod.time, "monotonic",
+                        lambda: next(clock, engines.HISTORY_TIMEOUT + 1.0))
+    findings, note, swept, reached = scan_history(tmp_path, None)
+    assert seen == [engines.HISTORY_TIMEOUT], seen
+    assert "--reverse" in FakeLog.instances[0].args
+    assert FakeLog.instances[0].killed
+    assert findings == [] and swept is False and reached is None
+    assert f"stopped at its {engines.HISTORY_TIMEOUT}s budget" in note
+    assert "starts over" in note
+    assert engines.HISTORY_TIMEOUT == 1800 > engines.SCAN_TIMEOUT == 600
     assert (inspect.signature(engines.run_json).parameters["timeout"].default
-            == engines.SCAN_TIMEOUT == 600)
+            == engines.SCAN_TIMEOUT)
+
+
+def test_a_budget_of_its_own_replaces_the_default(tmp_path, monkeypatch):
+    """`budget` is the sweep's deadline AND the plumbing call's timeout, and
+    the note names the number that was actually in force."""
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(kw.get("timeout"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc\n", stderr="")
+
+    FakeLog = _fake_log([f"commit {COMMIT_A}\n".encode()] + [b"+x\n"] * 70000)
+    clock = iter([0.0, 0.0, 7.5])
+    from security import secrets as secrets_mod
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", FakeLog)
+    monkeypatch.setattr(secrets_mod.time, "monotonic", lambda: next(clock, 7.5))
+    _findings, note, swept, _reached = scan_history(tmp_path, None, budget=7)
+    assert seen == [7]
+    assert swept is False and "stopped at its 7s budget" in note
+
+
+def three_commit_repo(root):
+    """Three commits, oldest first: a key in `first.env`, a second key in
+    `prod.env`, and a commit that deletes both -- so the two history findings
+    sit in two different commits and a cut between them is visible."""
+    run = lambda *a: subprocess.run(a, cwd=root, check=True, capture_output=True)
+    root.mkdir(parents=True, exist_ok=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (root / "first.env").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "first")
+    (root / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "second")
+    (root / "first.env").unlink()
+    (root / "prod.env").unlink()
+    (root / "README.md").write_text("clean\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "third")
+    shas = subprocess.run(["git", "rev-list", "--reverse", "HEAD"], cwd=root,
+                          check=True, capture_output=True, text=True).stdout.split()
+    return root, shas
+
+
+def _files_of(findings):
+    return sorted(f["occurrences"][0]["file"] for f in findings)
+
+
+def test_a_sweep_cut_by_its_budget_leaves_a_cursor_and_keeps_what_it_read(
+        tmp_path, monkeypatch):
+    """The history is walked oldest first, and the deadline is read at every
+    commit header. A clock that runs out after the first commit cuts the sweep
+    there: the first commit's finding is RETURNED (it used to be thrown away
+    with the rest), `reached` is that commit, `swept` is False, and the note
+    says where the sweep got to and that the next analysis continues from
+    there."""
+    root, shas = three_commit_repo(tmp_path / "repo")
+    from security import secrets as secrets_mod
+    # The deadline is computed at the first reading; the first commit's
+    # header is the second; the second commit's header is the third, past it.
+    clock = iter([0.0, 0.0])
+    monkeypatch.setattr(secrets_mod.time, "monotonic", lambda: next(clock, 10 ** 9))
+    findings, note, swept, reached = scan_history(root, None, budget=5)
+    assert _files_of(findings) == ["first.env"]
+    assert swept is False
+    assert reached == shas[0]
+    assert f"after 1 commit, at {shas[0][:7]}" in note, note
+    assert "the next analysis continues from there" in note
+    assert AWS not in note and AWS not in repr(findings)
+
+
+def test_a_sweep_that_reads_to_the_end_reaches_head(tmp_path):
+    root, shas = three_commit_repo(tmp_path / "repo")
+    findings, note, swept, reached = scan_history(root, None)
+    assert _files_of(findings) == ["first.env", "prod.env"]
+    assert note == "" and swept is True
+    assert reached == shas[-1]
+    assert all(f["commit_count"] == 1 for f in findings)
+
+
+def test_a_sweep_from_a_cursor_reads_only_the_commits_since(tmp_path):
+    """`since_sha` is the cursor the previous analysis reached: the sweep
+    reads `since..HEAD`, so the second commit's key is found and the first
+    commit's -- already read, and carried by the caller -- is not read again.
+    From HEAD itself there is nothing to read, and that is a complete sweep
+    that reaches HEAD, not a gap."""
+    root, shas = three_commit_repo(tmp_path / "repo")
+    findings, note, swept, reached = scan_history(root, shas[0])
+    assert _files_of(findings) == ["prod.env"]
+    assert note == "" and swept is True and reached == shas[-1]
+    findings, note, swept, reached = scan_history(root, shas[-1])
+    assert findings == [] and note == "" and swept is True and reached == shas[-1]
+
+
+def test_head_sha_and_is_ancestor_answer_from_git(tmp_path):
+    from security import secrets as secrets_mod
+    root, shas = three_commit_repo(tmp_path / "repo")
+    assert secrets_mod.head_sha(root) == shas[-1]
+    assert secrets_mod.is_ancestor(root, shas[0])
+    assert secrets_mod.is_ancestor(root, shas[-1])
+    assert not secrets_mod.is_ancestor(root, "0" * 40), "a commit git has never seen"
+    assert not secrets_mod.is_ancestor(root, "--output=/dev/null"), "not even a sha"
+    assert not secrets_mod.is_ancestor(root, None)
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    assert secrets_mod.head_sha(loose) is None
+    assert not secrets_mod.is_ancestor(loose, shas[0])
+
+
+def test_a_cut_inside_a_commit_drops_that_commits_share_of_a_finding(monkeypatch, tmp_path):
+    """A (rule, path) seen in commit A, read whole, and again in commit B, cut
+    half-way: the finding is reported for A alone, with a count of 1, and
+    `reached` is A -- so the next analysis reads B whole and adds its one
+    commit to the carried count rather than doubling it."""
+    lines = ([f"commit {COMMIT_A}\n".encode(), b"diff --git a/prod.env b/prod.env\n",
+              b"+AWS=AKIA" + b"IOSFODNN7EXAMPLE\n",
+              f"commit {COMMIT_B}\n".encode(), b"diff --git a/prod.env b/prod.env\n"]
+             + [b"+AWS=AKIA" + b"IOSFODNN7EXAMPLE\n"] * 70000)
+    FakeLog = _fake_log(lines)
+    # deadline, header A, header B, then the in-patch reading past it.
+    clock = iter([0.0, 0.0, 0.0, 99.0])
+    from security import secrets as secrets_mod
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 0, stdout="abc\n", stderr=""))
+    monkeypatch.setattr(subprocess, "Popen", FakeLog)
+    monkeypatch.setattr(secrets_mod.time, "monotonic", lambda: next(clock, 99.0))
+    findings, note, swept, reached = scan_history(tmp_path, None, budget=10)
+    assert reached == COMMIT_A and swept is False
+    assert [(f["occurrences"][0]["file"], f["commit_count"]) for f in findings] == [
+        ("prod.env", 1)]
+    assert "Seen in" not in findings[0]["rationale"]
+    assert f"after 1 commit, at {COMMIT_A[:7]}" in note
+
+
+def test_the_sweep_says_where_it_is_every_two_thousand_commits(monkeypatch, tmp_path, capsys):
+    """Progress on stderr, flushed, every `PROGRESS_EVERY` commits, with the
+    total from ONE `rev-list --count` asked when the first line is due -- a
+    small repository never pays for it."""
+    from security import secrets as secrets_mod
+    counted = []
+
+    def fake_run(cmd, **kw):
+        if "--count" in cmd:
+            counted.append(cmd[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="4500\n", stderr="")
+        if "rev-parse" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=COMMIT_B + "\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc\n", stderr="")
+
+    lines = [f"commit {i:040x}\n".encode() for i in range(1, 4101)]
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _fake_log(lines))
+    findings, note, swept, reached = scan_history(tmp_path, None)
+    err = capsys.readouterr().err.splitlines()
+    assert err == ["prepare: history 2000/4500 commits", "prepare: history 4000/4500 commits"]
+    assert counted == ["HEAD"], "one call, for the range the sweep reads"
+    assert findings == [] and swept is True and reached == COMMIT_B
+    assert secrets_mod.PROGRESS_EVERY == 2000
 
 
 def test_scan_tree_counts_the_lines_it_already_read(tmp_path):
@@ -508,7 +712,7 @@ def test_the_history_sweep_reads_a_body_across_its_added_lines(tmp_path):
     (tmp_path / "notes.md").unlink()
     git("add", "-A")
     git("commit", "-qm", "remove")
-    found, note, swept = scan_history(tmp_path, None)
+    found, note, swept, _ = scan_history(tmp_path, None)
     assert note == "" and swept is True
     assert [(f["rule"], f["occurrences"][0]["file"]) for f in found] == [
         ("private_key", "deploy.key")]
@@ -557,12 +761,12 @@ def test_the_history_sweep_obeys_the_default_too(tmp_path):
     run("git", "add", "-A")
     run("git", "commit", "-qm", "add")
 
-    filtered, note, _ = scan_history(tmp_path, None)
+    filtered, note, _, _ = scan_history(tmp_path, None)
     assert note == ""
     assert sorted((f["occurrences"][0]["file"], f["rule"]) for f in filtered) == [
         (".env.example", "github_token"), ("prod.env", "github_token")]
 
-    everything, _, _ = scan_history(tmp_path, None, ["!defaults"])
+    everything, _, _, _ = scan_history(tmp_path, None, ["!defaults"])
     assert sorted({f["occurrences"][0]["file"] for f in everything}) == [
         ".env.example", "prod.env", "tests/fixtures/fake.env"]
 
@@ -589,7 +793,7 @@ def test_history_survives_bytes_that_are_not_utf8(tmp_path):
     (tmp_path / "prod.env").unlink()
     run("git", "add", "-A")
     run("git", "commit", "-qm", "remove")
-    hist, note, swept = scan_history(tmp_path, None)
+    hist, note, swept, _ = scan_history(tmp_path, None)
     assert note == "" and swept is True
     assert [h["rule"] for h in hist] == ["aws_access_key"]
     assert hist[0]["historical"] is True

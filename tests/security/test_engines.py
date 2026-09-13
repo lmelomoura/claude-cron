@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 import textwrap
 from pathlib import Path
@@ -288,6 +289,26 @@ def test_purge_reaches_a_forbidden_field_nested_deeper_than_the_fixtures_go():
     assert clean[0]["Findings"][0]["Context"] == "kept"
     assert "Match" not in clean[0]["Findings"][0]
     assert "Secret" not in clean[0]["Findings"][0]
+
+
+# --------------------------------------------------------- the two budgets
+
+def test_the_history_budget_is_its_own_and_the_environment_sets_it():
+    """`HISTORY_TIMEOUT` is the budget of the two history passes -- gitleaks'
+    `git` mode and the built-in sweep -- and it is above `SCAN_TIMEOUT`, the
+    engines' budget over the working tree: a history grows with a repository's
+    age, not its size, and the repository that measured this ran both passes
+    into the 600 s ceiling in series and covered nothing. The default is 1800;
+    `AGENTLOOP_SECURITY_HISTORY_TIMEOUT` overrides it per install, read at
+    import, so the override is proved in a fresh interpreter."""
+    assert engines.HISTORY_TIMEOUT == 1800
+    assert engines.SCAN_TIMEOUT == 600 < engines.HISTORY_TIMEOUT
+    probe = "import security.engines as e; print(e.HISTORY_TIMEOUT)"
+    env = {**os.environ, "AGENTLOOP_SECURITY_HISTORY_TIMEOUT": "42",
+           "PYTHONPATH": str(Path(engines.__file__).resolve().parent.parent)}
+    out = subprocess.run([sys.executable, "-c", probe], env=env,
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "42"
 
 
 # ---------------------------------------------------------------- run_json

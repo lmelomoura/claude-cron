@@ -238,7 +238,8 @@ def test_a_live_run_says_when_its_deterministic_phase_is_still_running(srv, clea
     logdir = srv.DATA_DIR / "logs" / "jprep"
     logdir.mkdir(parents=True, exist_ok=True)
     logp = logdir / "20231114T221820Z-4244.json"
-    (logdir / "20231114T221820Z-4244.json.prepare").write_text("")
+    (logdir / "20231114T221820Z-4244.json.prepare").write_text(
+        "prepare: started secrets, hygiene\nprepare: hygiene done (2s)\n")
     slot = srv.DATA_DIR / "locks" / "jprep" / "4244"
     slot.mkdir(parents=True, exist_ok=True)
     (slot / "pid").write_text(str(os.getpid()))
@@ -248,6 +249,7 @@ def test_a_live_run_says_when_its_deterministic_phase_is_still_running(srv, clea
     d = srv.load_run_detail("jprep", start)
     assert d is not None and d["live"] is True
     assert d["phase"] == "prepare", "the .prepare sidecar with no stream yet is the deterministic phase"
+    assert d["phase_detail"] == "prepare: hygiene done (2s)", "the last progress line is where it is"
     # The moment the stream exists the phase is over, whatever .prepare says.
     (logdir / "20231114T221820Z-4244.stream.ndjson").write_text("")
     d = srv.load_run_detail("jprep", start)
