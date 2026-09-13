@@ -238,6 +238,27 @@ export function platformOf(job, project){
 
 export function platformLabel(p){ return PLATFORM_LABELS[p] || "Anthropic"; }
 
+// A derived security job (`security-<slug of the project name>`) is never in
+// jobs.json: the engine derives it from the project's security block at
+// launch. The page mirrors that derivation as far as a live row needs it --
+// which project, which platform, which model -- so a running analysis is not
+// read as an Anthropic run with no model for as long as it runs. The slug is
+// the engine's security_slug: lower case, every run of characters outside
+// [a-z0-9] one dash, no dash at either end.
+export function securitySlug(name){
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+export function derivedSecurityJob(id, projects){
+  const sid = String(id || "");
+  if(!sid.startsWith("security-")) return null;
+  const slug = sid.slice("security-".length);
+  const p = (projects || []).find(x => x && x.security && typeof x.security === "object"
+                                        && securitySlug(x.name) === slug);
+  if(!p) return null;
+  return {id: sid, project: p.name || "", platform: p.security.platform || p.platform || "",
+          model: p.security.model || ""};
+}
+
 // Whether /api/models has told this page what Settings switched on: the
 // registry rides on every platform entry as `enabled`. A payload without it
 // (or none yet) leaves every editor as it was before Settings existed.

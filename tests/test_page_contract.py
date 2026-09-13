@@ -1116,6 +1116,19 @@ def test_the_server_hands_the_page_what_the_api_did(srv):
     assert '"api_error_status": data.get("api_error_status")' in server_src
 
 
+def test_the_terminal_names_the_deterministic_phase_while_it_runs(srv):
+    """On OpenAI and OpenCode the engine runs `prepare` before the agent, and a
+    long git history keeps it busy for minutes; the Terminal said "Waiting for
+    the first turn" the whole time, which reads as a run that never started.
+    The server names the phase (`phase: "prepare"`, from the .prepare sidecar
+    with no stream yet) and the page says so."""
+    page = (REPO / "bin" / "dashboard.html").read_text()
+    assert 'd.phase === "prepare"' in page
+    assert "Running the deterministic phase before the agent" in page
+    server_src = (REPO / "bin" / "agentloop-server").read_text()
+    assert '"phase": phase' in server_src
+
+
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_a_resume_is_not_its_own_continuation(srv, tmp_path):
     """A resumed run carries the session it continued in BOTH `resumed_from` and
@@ -2863,27 +2876,38 @@ def test_a_run_still_going_already_knows_which_cli_is_spending(srv, tmp_path):
     page = _js(srv)
     app = _app_js(srv)
     deps = (_plainfn(page, "liveRuns") + "\n" + _const(app, "KNOWN_PLATFORMS")
-            + _plainfn(app, "platformKey") + _plainfn(app, "platformOf"))
+            + _plainfn(app, "platformKey") + _plainfn(app, "platformOf")
+            + _plainfn(app, "securitySlug") + _plainfn(app, "derivedSecurityJob"))
     script = tmp_path / "live-platform.js"
     script.write_text("""
-    const ALApp = {platformOf};
+    const ALApp = {platformOf, derivedSecurityJob};
     const DATA = {
-      active_runs: {oa: [{start: 100, pid: 7, session: "thr"}], an: [{start: 90, pid: 8}]},
+      active_runs: {oa: [{start: 100, pid: 7, session: "thr"}], an: [{start: 90, pid: 8}],
+                    "security-atd-core": [{start: 80, pid: 9}]},
       jobs: [{id: "oa", project: "P", model: "gpt-5.6-sol"}, {id: "an", model: "opus"}],
-      projects: [{name: "P", platform: "openai"}],
+      projects: [{name: "P", platform: "openai"},
+                 {name: "ATD Core", platform: "anthropic",
+                  security: {enabled: true, platform: "opencode", model: "pdm_ai/GLM-5.3-NVFP4"}}],
     };
     const projById = (n) => DATA.projects.find(p => p.name === n) || null;
     const forgetDeadStops = () => {};
     """ + deps + """
     const by = {}; liveRuns().forEach(r => { by[r.id] = r; });
+    const sec = by["security-atd-core"];
     console.log(JSON.stringify({oa: by.oa.platform, an: by.an.platform,
-                                model: by.oa.model, live: by.oa.live}));
+                                model: by.oa.model, live: by.oa.live,
+                                sec: sec.platform, secModel: sec.model, secProject: sec.project,
+                                slug: securitySlug("My_App 2"), none: derivedSecurityJob("security-nobody", DATA.projects)}));
     """)
     out = json.loads(subprocess.run(["node", str(script)], capture_output=True,
                                     text=True, check=True).stdout)
     assert out["oa"] == "openai", "a live run of a job whose project is on OpenAI is badged now, not later"
     assert out["an"] == "anthropic"
     assert out["model"] == "gpt-5.6-sol" and out["live"] is True
+    # A running security analysis has no job in jobs.json: the project's
+    # security block is its platform and model, never an Anthropic default.
+    assert out["sec"] == "opencode" and out["secModel"] == "pdm_ai/GLM-5.3-NVFP4" and out["secProject"] == "ATD Core"
+    assert out["slug"] == "my-app-2" and out["none"] is None
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

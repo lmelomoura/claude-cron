@@ -2239,7 +2239,25 @@ def load_live_detail(jid, start_i):
         projects = json.loads(PROJECTS_FILE.read_text()).get("projects", [])
     except Exception:  # noqa: BLE001
         projects = []
+    # A derived security job is never in jobs.json: its platform and model
+    # come from the project's security block, the way the engine derives
+    # them. Without this every running analysis read "Anthropic" with no
+    # model, whatever the block said, for as long as its deterministic phase
+    # took (minutes, on a long git history).
+    if not job and jid.startswith("security-"):
+        job = _derived_security_job(jid, projects)
     job_platform = _job_platform(job, projects) if job else "anthropic"
+    # The deterministic phase (`prepare`) runs engine-side before the agent on
+    # the platforms without prepare_inline: the engine opens `<log>.prepare`
+    # as it starts that phase and the stream file only at the launch, so
+    # the sidecar with no stream yet names the phase the run is in.
+    phase = ""
+    try:
+        if not stream and logp and sp is not None and not sp.exists() \
+                and Path(logp + ".prepare").exists():
+            phase = "prepare"
+    except Exception:  # noqa: BLE001
+        phase = ""
     rec = {"id": jid, "start": start_i, "status": "running",
            "duration": max(0, int(time.time()) - start_i), "cost": None, "session": sess,
            "log": logp, "forced": False, "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
@@ -2248,7 +2266,7 @@ def load_live_detail(jid, start_i):
            "platform": _platform_from_stream(stream, job_platform),
            "cost_basis": "", "live": True}
     interactive = bool(job.get("interactive"))
-    return {"record": rec, "live": True, "interactive": interactive,
+    return {"record": rec, "live": True, "interactive": interactive, "phase": phase,
             "api_retries": _api_retries(stream),
             "agent": {"result": last_text, "num_turns": turns, "session": sess,
                       "stop_reason": "still running"},
@@ -2682,6 +2700,29 @@ def _anthropic_model(value):
     further down; this is only about keeping a foreign id out of the list."""
     return isinstance(value, str) and (
         value in {f[0] for f in MODEL_FAMILIES} or value.startswith("claude-"))
+
+
+def _security_slug(name):
+    """The engine's security_slug: lower case, every run of characters
+    outside [a-z0-9] becomes one dash, no dash at either end."""
+    return re.sub(r"[^a-z0-9]+", "-", str(name or "").lower()).strip("-")
+
+
+def _derived_security_job(jid, projects):
+    """The job the engine derives for a project's security block, as far as
+    the page needs it: id, project, platform and model. The block's own
+    platform when it names one, else the project's; the block's model as
+    written (the engine validates it against the catalog at derivation time,
+    this only describes a run that is already going)."""
+    slug = jid[len("security-"):]
+    for entry in projects:
+        sec = entry.get("security") if isinstance(entry.get("security"), dict) else None
+        if sec is None or _security_slug(entry.get("name")) != slug:
+            continue
+        return {"id": jid, "project": entry.get("name") or "",
+                "platform": sec.get("platform") or entry.get("platform") or "",
+                "model": sec.get("model") or ""}
+    return {}
 
 
 def _job_platform(job, projects):

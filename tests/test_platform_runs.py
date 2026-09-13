@@ -198,3 +198,57 @@ def test_a_live_run_is_described_by_its_job_until_its_stream_speaks(srv, clean_d
     assert d["record"]["model"] == "gpt-5.6-sol", "and the model it was launched with"
     assert d["record"]["project"] == "P"
     assert d["interactive"] is True, "the job is read once, for every field it answers"
+
+
+def test_a_live_security_analysis_is_described_by_its_projects_security_block(srv, clean_data):
+    """A derived security job never appears in jobs.json, so the run dialog
+    called every running analysis Anthropic with no model, whatever the
+    project's security block said (seen on a real install: an analysis on
+    OpenCode read "Platform Anthropic" while its deterministic phase ran).
+    The block is the source until the stream is."""
+    srv.JOBS_FILE.write_text(json.dumps({"jobs": []}))
+    srv.PROJECTS_FILE.write_text(json.dumps({"projects": [
+        {"name": "ATD Core", "platform": "anthropic",
+         "security": {"enabled": True, "platform": "opencode", "model": "pdm_ai/GLM-5.3-NVFP4"}},
+    ]}))
+    start = 1700000600
+    slot = srv.DATA_DIR / "locks" / "security-atd-core" / "4243"
+    slot.mkdir(parents=True, exist_ok=True)
+    (slot / "pid").write_text(str(os.getpid()))
+    (slot / "start").write_text(str(start))
+    (slot / "boot").write_text(srv.boot_id())
+    (slot / "log").write_text("")
+    d = srv.load_run_detail("security-atd-core", start)
+    assert d is not None and d["live"] is True
+    assert d["record"]["platform"] == "opencode", "the block's platform, not the project's, and never a default"
+    assert d["record"]["model"] == "pdm_ai/GLM-5.3-NVFP4"
+    assert d["record"]["project"] == "ATD Core"
+    assert srv._security_slug("ATD Core") == "atd-core" and srv._security_slug("My_App 2") == "my-app-2"
+
+
+def test_a_live_run_says_when_its_deterministic_phase_is_still_running(srv, clean_data):
+    """On a platform whose `prepare` runs engine-side, the seconds (or minutes,
+    on a long git history) before the agent starts showed "Waiting for the
+    first turn" and nothing else. The `.prepare` sidecar exists from the
+    moment the engine starts that phase and the stream file only from the
+    launch, so the two together name the phase."""
+    srv.JOBS_FILE.write_text(json.dumps({"jobs": [{"id": "jprep", "project": "P", "model": "pdm_ai/glm-5.3-flash"}]}))
+    srv.PROJECTS_FILE.write_text(json.dumps({"projects": [{"name": "P", "platform": "opencode"}]}))
+    start = 1700000700
+    logdir = srv.DATA_DIR / "logs" / "jprep"
+    logdir.mkdir(parents=True, exist_ok=True)
+    logp = logdir / "20231114T221820Z-4244.json"
+    (logdir / "20231114T221820Z-4244.json.prepare").write_text("")
+    slot = srv.DATA_DIR / "locks" / "jprep" / "4244"
+    slot.mkdir(parents=True, exist_ok=True)
+    (slot / "pid").write_text(str(os.getpid()))
+    (slot / "start").write_text(str(start))
+    (slot / "boot").write_text(srv.boot_id())
+    (slot / "logfile").write_text(str(logp))    # the slot's own breadcrumb, the engine's name for it
+    d = srv.load_run_detail("jprep", start)
+    assert d is not None and d["live"] is True
+    assert d["phase"] == "prepare", "the .prepare sidecar with no stream yet is the deterministic phase"
+    # The moment the stream exists the phase is over, whatever .prepare says.
+    (logdir / "20231114T221820Z-4244.stream.ndjson").write_text("")
+    d = srv.load_run_detail("jprep", start)
+    assert d["phase"] == "", "a stream file, even empty, means the agent was launched"

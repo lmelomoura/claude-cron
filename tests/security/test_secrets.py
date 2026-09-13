@@ -326,12 +326,34 @@ def test_the_history_sweep_runs_on_the_engines_time_budget(tmp_path, monkeypatch
 
     def fake_run(cmd, **kw):
         seen.append(kw.get("timeout"))
-        stdout = "abc\n" if cmd[3] == "rev-list" else ""
-        return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="abc\n", stderr="")
 
+    # `git log -p` is streamed through Popen now, with the deadline kept by
+    # hand from the same constant: a clock that jumps past it on the second
+    # line must end the sweep as a stated timeout, with the process killed.
+    class FakeLog:
+        returncode = 0
+        killed = False
+
+        def __init__(self, *a, **kw):
+            self.stdout = iter([b"commit 0123456789abcdef0123456789abcdef01234567\n",
+                                b"+AKIA" + b"IOSFODNN7EXAMPLE\n"])
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self):
+            return 0
+
+    clock = iter([0.0, 0.0, engines.SCAN_TIMEOUT + 1.0])
+    from security import secrets as secrets_mod
     monkeypatch.setattr(subprocess, "run", fake_run)
-    scan_history(tmp_path, None)
-    assert seen == [engines.SCAN_TIMEOUT, engines.SCAN_TIMEOUT], seen
+    monkeypatch.setattr(subprocess, "Popen", FakeLog)
+    monkeypatch.setattr(secrets_mod.time, "monotonic", lambda: next(clock, engines.SCAN_TIMEOUT + 1.0))
+    findings, note, swept = scan_history(tmp_path, None)
+    assert seen == [engines.SCAN_TIMEOUT], seen
+    assert findings == [] and swept is False
+    assert f"timed out after {engines.SCAN_TIMEOUT}s" in note
     assert (inspect.signature(engines.run_json).parameters["timeout"].default
             == engines.SCAN_TIMEOUT == 600)
 
@@ -543,3 +565,31 @@ def test_the_history_sweep_obeys_the_default_too(tmp_path):
     everything, _, _ = scan_history(tmp_path, None, ["!defaults"])
     assert sorted({f["occurrences"][0]["file"] for f in everything}) == [
         ".env.example", "prod.env", "tests/fixtures/fake.env"]
+
+
+def test_history_survives_bytes_that_are_not_utf8(tmp_path):
+    """Seen on a real repository: 21,607 commits, and one byte of one old
+    file that is not UTF-8. The sweep ran `git log -p` with `text=True`,
+    which decodes the whole history strictly, so the one byte raised
+    UnicodeDecodeError six gigabytes in, `prepare` failed after 399 s, and
+    the analysis went to the agent with no deterministic findings at all.
+    The history is read line by line as bytes and decoded leniently: the
+    key in the other commit is still found, and nothing is held in memory
+    beyond one file's additions in one commit."""
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True, capture_output=True)
+    run("git", "init", "-q")
+    run("git", "config", "user.email", "t@example.com")
+    run("git", "config", "user.name", "t")
+    (tmp_path / "legacy.txt").write_bytes(b"caf\xcd latin-1, not utf-8\n\xff\xfe\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "legacy bytes")
+    (tmp_path / "prod.env").write_text(f"AWS_ACCESS_KEY_ID={AWS}\n")
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "add")
+    (tmp_path / "prod.env").unlink()
+    run("git", "add", "-A")
+    run("git", "commit", "-qm", "remove")
+    hist, note, swept = scan_history(tmp_path, None)
+    assert note == "" and swept is True
+    assert [h["rule"] for h in hist] == ["aws_access_key"]
+    assert hist[0]["historical"] is True

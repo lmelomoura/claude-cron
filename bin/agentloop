@@ -2459,6 +2459,13 @@ import json, re, sys
 at, version, rawfile = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 with open(rawfile) as f:
     text = f.read()
+RANK = {"none": 0, "off": 0, "disabled": 0, "non-think": 0, "nothink": 0, "no-think": 0, "no_think": 0,
+        "minimal": 1, "low": 2, "medium": 3, "default": 3, "high": 4,
+        "xhigh": 5, "x-high": 5, "extra-high": 5, "very-high": 5, "max": 6, "maximum": 6, "ultra": 6}
+def rank_of(name, body):
+    eff = body.get("reasoningEffort") if isinstance(body, dict) else None
+    key = str(eff if isinstance(eff, str) and eff else name).lower()
+    return RANK.get(key)
 models = []
 for chunk in re.split(r"^(?=[A-Za-z0-9_.-]+/[^\n{]+\n\{)", text, flags=re.M):
     chunk = chunk.strip()
@@ -2479,10 +2486,22 @@ for chunk in re.split(r"^(?=[A-Za-z0-9_.-]+/[^\n{]+\n\{)", text, flags=re.M):
     caps = d.get("capabilities") if isinstance(d.get("capabilities"), dict) else {}
     limit = d.get("limit") if isinstance(d.get("limit"), dict) else {}
     variants = d.get("variants") if isinstance(d.get("variants"), dict) else {}
+    # The CLI lists a model variants in the order the provider config wrote
+    # them, and operators write them in any order (max, high, non-think on one
+    # model; low, medium, high, max, non-think on the next). The effort ladder
+    # reads low to high on the page, so the block ranks every name the
+    # vocabulary knows, by the reasoningEffort the variant carries when it has
+    # one and by its own name otherwise. A ladder with a name outside the
+    # vocabulary keeps the CLI order untouched: ranking half of it would be
+    # a guess.
+    names = list(variants.keys())
+    ranks = [rank_of(n, variants.get(n)) for n in names]
+    if names and all(r is not None for r in ranks):
+        names = sorted(names, key=lambda n: rank_of(n, variants.get(n)))
     models.append({"id": head, "provider": provider, "name": d.get("name") or name, "cost": prices,
                    "priced": any(v > 0 for v in prices.values()),
                    "context": limit.get("context") or 0, "output_limit": limit.get("output") or 0,
-                   "variants": list(variants.keys()), "tools": caps.get("toolcall") is not False,
+                   "variants": names, "tools": caps.get("toolcall") is not False,
                    "reasoning": caps.get("reasoning") is True, "status": d.get("status") or "active"})
 if models:
     print(json.dumps({"at": at, "source": "opencode models --verbose", "version": version, "models": models}))
@@ -4367,8 +4386,16 @@ JSON
     && ok "the block carries the 13 models the stand-in lists" || bad "opencode block: $("$JQ" -c '.opencode | {at, source, n: (.models | length)}' "$_oc/config/models.json")"
   "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/openai/gpt-oss-120b") | .provider == "pdm_ai" and .name == "openai/gpt-oss-120b"' \
     "$_oc/config/models.json" >/dev/null 2>&1 && ok "a slash inside the model id splits at the FIRST slash" || bad "gpt-oss row: $("$JQ" -c '.opencode.models[] | select(.id | test("gpt-oss"))' "$_oc/config/models.json")"
-  "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash") | .priced == true and .cost.input == 0.033011 and .cost.output == 0.139816 and .tools == true and .reasoning == true and (.variants == ["max","high","non-think"]) and .context == 197144' \
-    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a priced model carries its price, its variants, its tools and its context" || bad "glm row: $("$JQ" -c '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash")' "$_oc/config/models.json")"
+  "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash") | .priced == true and .cost.input == 0.033011 and .cost.output == 0.139816 and .tools == true and .reasoning == true and (.variants == ["non-think","high","max"]) and .context == 197144' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a priced model carries its price, its variants ranked low to high, its tools and its context" || bad "glm row: $("$JQ" -c '.opencode.models[] | select(.id == "pdm_ai/glm-5.3-flash")' "$_oc/config/models.json")"
+  # The CLI lists variants in the order the provider config wrote them (the
+  # stand-in has max, high, non-think on one model and low, medium, high,
+  # max, non-think on another, from the same operator); the ladder reads low
+  # to high on the page, so the block ranks every name the vocabulary knows.
+  "$JQ" -e '.opencode.models[] | select(.id == "pdm_ai/DeepSeek-V4-Flash-MB3") | .variants == ["non-think","low","medium","high","max"]' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a ladder written in no order comes out ranked: non-think, low, medium, high, max" || bad "deepseek row: $("$JQ" -c '.opencode.models[] | select(.id == "pdm_ai/DeepSeek-V4-Flash-MB3") | .variants' "$_oc/config/models.json")"
+  "$JQ" -e '.opencode.models[] | select(.id == "opencode/muse-spark-1.2-contributor-free") | .variants == ["minimal","low","medium","high","xhigh"]' \
+    "$_oc/config/models.json" >/dev/null 2>&1 && ok "a ladder the CLI already lists low to high is unchanged" || bad "muse row: $("$JQ" -c '.opencode.models[] | select(.id == "opencode/muse-spark-1.2-contributor-free") | .variants' "$_oc/config/models.json")"
   "$JQ" -e '.opencode.models[] | select(.id == "opencode/big-pickle") | .priced == false and .variants == [] and .status == "active"' \
     "$_oc/config/models.json" >/dev/null 2>&1 && ok "a zero-cost model is UNPRICED, not free, and a model without variants offers no effort" || bad "big-pickle row: $("$JQ" -c '.opencode.models[] | select(.id == "opencode/big-pickle")' "$_oc/config/models.json")"
   [ "$("$JQ" -r '.opencode.source, .opencode.version' "$_oc/config/models.json" | tr '\n' '|')" = "opencode models --verbose|1.18.30|" ] \
@@ -4376,7 +4403,7 @@ JSON
   ( MODELS_FILE="$_oc/config/models.json"
     [ "$(opencode_catalog_ids | grep -c .)" = "13" ] || exit 1
     [ "$(opencode_catalog_visible | head -1)" = "opencode/big-pickle" ] || exit 2
-    [ "$(opencode_catalog_efforts pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "max high non-think " ] || exit 3
+    [ "$(opencode_catalog_efforts pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "non-think high max " ] || exit 3
     [ -z "$(opencode_catalog_efforts opencode/big-pickle)" ] || exit 4
     opencode_catalog_priced pdm_ai/glm-5.3-flash || exit 5
     opencode_catalog_priced opencode/big-pickle && exit 6
@@ -4420,7 +4447,7 @@ JSON
 
   echo "opencode effort and model — validated against the catalog, because the CLI validates nothing"
   ( MODELS_FILE="$_oc/config/models.json"
-    [ "$(platform_efforts opencode pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "max high non-think " ] || exit 1
+    [ "$(platform_efforts opencode pdm_ai/glm-5.3-flash | tr '\n' ' ')" = "non-think high max " ] || exit 1
     [ -z "$(platform_efforts opencode opencode/big-pickle)" ] || exit 2
     platform_effort_ok opencode pdm_ai/glm-5.3-flash high || exit 3
     platform_effort_ok opencode pdm_ai/glm-5.3-flash "" || exit 4
