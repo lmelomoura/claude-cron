@@ -877,8 +877,12 @@ model's own (the catalog says; `gpt-5.6-sol` accepts `ultra`).
 
 On OpenCode it maps to `--variant`, and the values are the model's own
 `variants` from the catalog (`high`, `max`, `non-think`, … — each model lists
-its own, and a model without any takes no effort). They are named, not
-ranked, so the dashboard shows no *Faster*/*Smarter* captions there. The CLI
+its own, and a model without any takes no effort). The CLI lists them in the
+order the provider config wrote them, so the catalog ranks the ladder from
+the least reasoning to the most when every name is one it knows (`non-think`,
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or the `reasoningEffort`
+the variant carries) and keeps the CLI's order otherwise. The stops are
+named, so the dashboard shows no *Faster*/*Smarter* captions there. The CLI
 accepts any variant in silence and does nothing with an unknown one
 (measured), so the engine validates it: `set-field` refuses a value the
 model does not list, and a job that still carries one is launched without an
@@ -1933,8 +1937,9 @@ skipped at launch with the reason in `tick.log`.
   OpenAI, the CLI's own figure on OpenCode — and that the per-run cap is
   advisory. On OpenCode the model list names the provider beside each model
   and marks one that makes no tool calls, and the effort control is the
-  model's own variants, with no *Faster*/*Smarter* captions: the stops are
-  named, not ranked. A card names the platform only when it is not
+  model's own variants, ranked low to high when their names are known, with
+  no *Faster*/*Smarter* captions: the stops are named. A card names the
+  platform only when it is not
   Anthropic, and carries a *platform disabled* / *model disabled* chip when
   its value is off.
   A job holding a session from a run that was cut short says so right on the

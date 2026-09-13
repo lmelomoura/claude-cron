@@ -3019,7 +3019,9 @@ function unjournaledLive(){
 function liveRuns(){
   const now=Math.floor(Date.now()/1000), out=[];
   for(const [id, slots] of Object.entries(DATA.active_runs||{})){
-    const j=(DATA.jobs||[]).find(x=>x.id===id)||{};
+    // A running security analysis has no job in jobs.json: its platform and
+    // model are the project's security block, derived the way the engine does.
+    const j=(DATA.jobs||[]).find(x=>x.id===id)||ALApp.derivedSecurityJob(id, DATA.projects||[])||{};
     for(const s of (slots||[])){
       const started=s.start||0;
       // The platform is the job's, resolved the way the engine resolves it --
@@ -4337,6 +4339,14 @@ function renderLog(d){
           // reads as "still going" and hides a real failure: the transcript was
           // lost, not delayed.
           + (retryLine ? esc(retryLine)
+             // The deterministic phase runs engine-side before the agent on
+             // OpenAI and OpenCode (prepare_inline is Anthropic only), and a
+             // long git history keeps it busy for minutes: name it, or the
+             // operator reads a run that has not started as one that is stuck.
+             : (d.live && d.phase === "prepare")
+                 ? 'Running the deterministic phase before the agent (secrets in the tree and in the '
+                   + 'whole git history, dependencies, SBOM, hygiene). On a long history this takes '
+                   + 'minutes; the agent starts when it ends.'
              : d.live ? 'Waiting for the first turn…'
                     : 'No transcript was captured for this run. It finished, and its cost '
                       + 'and turn count were recorded, but the log could not be read back — '

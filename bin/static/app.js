@@ -359,6 +359,22 @@
   function platformLabel(p) {
     return PLATFORM_LABELS[p] || "Anthropic";
   }
+  function securitySlug(name) {
+    return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  }
+  function derivedSecurityJob(id, projects) {
+    const sid = String(id || "");
+    if (!sid.startsWith("security-")) return null;
+    const slug = sid.slice("security-".length);
+    const p = (projects || []).find((x) => x && x.security && typeof x.security === "object" && securitySlug(x.name) === slug);
+    if (!p) return null;
+    return {
+      id: sid,
+      project: p.name || "",
+      platform: p.security.platform || p.platform || "",
+      model: p.security.model || ""
+    };
+  }
   function registryKnown(platforms) {
     const a = platforms && platforms.anthropic;
     return !!(a && a.enabled !== void 0);
@@ -2989,6 +3005,10 @@
     modelOptionsFor,
     platformOf,
     platformLabel,
+    // securitySlug and derivedSecurityJob: what liveRuns reads
+    // for a running analysis, whose job is never in jobs.json.
+    securitySlug,
+    derivedSecurityJob,
     // PLATFORM_LABELS, registryKnown, platformOptions and
     // hiddenModelCount are Task 7's: the Platform/Model combos'
     // own read of what Settings switched on, alongside
@@ -3044,5 +3064,5 @@
     setupBanner
   };
 })();
-/* ui-bundle: ae5b0568aac08eb1f614141e30cf2a910d780d5b9b4754945fb2fb0c7c2cded6 */
-/* ui-sources: e54583add2bde199dc85a2f71982aa0f089515e2a0e8f3d0d2ac1bb2253a8005 */
+/* ui-bundle: 22b2db40599f2f84a3a63059485494dbffecd6f6c86fc435edf9d5a8c736404e */
+/* ui-sources: 511693ab12aa5851b5f29c75a638e0ea0fd7160ce118161264f280020dc13262 */

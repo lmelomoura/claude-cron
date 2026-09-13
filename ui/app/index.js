@@ -42,7 +42,7 @@ import { RF, renderRunsPage, runsSort, runsSetPage,
 import { changedKeys, EFFORTS, FALLBACK_EFFORTS, effortIndex, effortFromIndex, effortsFor,
          FALLBACK_PERMISSIONS, permissionsFor, defaultPermissionFor, defaultModelFor,
          modelOptionsFor, platformOf, platformLabel, PLATFORM_LABELS, KNOWN_PLATFORMS,
-         platformKey, registryKnown,
+         platformKey, registryKnown, securitySlug, derivedSecurityJob,
          platformOptions, hiddenModelCount, modelEnabled, DISABLED_SUFFIX,
          costParts, tokensText,
          dayNumbers, shapeRepoRows, projectStepError } from "./editor-domain.js";
@@ -207,6 +207,9 @@ window.ALApp = { init, visibleJobs, jobFilters, bulkOn,
                  changedKeys, EFFORTS, FALLBACK_EFFORTS, effortIndex, effortFromIndex, effortsFor,
                  FALLBACK_PERMISSIONS, permissionsFor, defaultPermissionFor, defaultModelFor,
                  modelOptionsFor, platformOf, platformLabel,
+                 // securitySlug and derivedSecurityJob: what liveRuns reads
+                 // for a running analysis, whose job is never in jobs.json.
+                 securitySlug, derivedSecurityJob,
                  // PLATFORM_LABELS, registryKnown, platformOptions and
                  // hiddenModelCount are Task 7's: the Platform/Model combos'
                  // own read of what Settings switched on, alongside

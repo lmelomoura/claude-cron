@@ -129,8 +129,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (a row of zeros declares a free model; `resolve-pricing` never touches
     the block) and records `none` otherwise. `/api/models` carries the
     catalog per model (the provider, the price per million from either
-    source or none, the variants as the effort ladder, whether the model
-    makes tool calls); `agentloop platforms`, `status` and `usage` say what
+    source or none, the variants as the effort ladder, ranked from the least
+    reasoning to the most when every name is one the catalog knows, since
+    the CLI lists them in the order the provider config wrote them, whether
+    the model makes tool calls); `agentloop platforms`, `status` and `usage` say what
     they say for the other two, OpenCode's way: the catalog's age, the
     enabled models still unpriced, and that there are no usage windows to
     wait for. The first `/api/models` on an install whose catalog is not
@@ -453,6 +455,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The history sweep of the deterministic phase survives a byte that is not
+  UTF-8, and no longer holds the whole history in memory.** On a real
+  repository (21,607 commits, 6.4 GB of `git log -p`) the built-in secret
+  scanner decoded the whole output strictly, raised on one byte of one old
+  file after 399 seconds, and the analysis reached the agent with no
+  deterministic finding at all. The history is now streamed line by line as
+  bytes and decoded leniently, on the same time budget, holding one file's
+  additions in one commit at a time.
+- **A running security analysis names its platform and model, and says when
+  its deterministic phase is running.** A derived security job is never in
+  `jobs.json`, so the run dialog and the Security pages called every running
+  analysis Anthropic with no model; they now read the project's security
+  block. On OpenAI and OpenCode `prepare` runs engine-side before the agent
+  and a long history keeps it busy for minutes: the Terminal says so instead
+  of "Waiting for the first turn".
 - **A run that never wrote a byte is killed at the stall timeout, whatever
   its CPU does.** The watchdog read any change of the run's CPU seconds as
   life, and a hung CLI is not still: measured on OpenCode, a process whose

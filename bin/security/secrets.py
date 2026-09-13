@@ -9,6 +9,8 @@ secret scanner becomes something people turn off.
 import math
 import re
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 from .engines import SCAN_TIMEOUT
@@ -583,6 +585,18 @@ def scan_history(root, since_sha, ignore=(), rename=None):
     secret row -- which needs both -- read `warning` for a limit two lines
     apart.
 
+    THE HISTORY IS STREAMED, LINE BY LINE, AS BYTES. This used to collect
+    `git log -p` whole with `text=True`: on a real repository (21,607
+    commits, 6.4 GB of history) the strict UTF-8 decode raised
+    UnicodeDecodeError on one byte of one old file, `prepare` failed after
+    399 s, and the analysis reached the agent with no deterministic finding
+    at all -- while the whole output sat in memory. Each line is decoded
+    leniently on its own (a byte that is not UTF-8 cannot be part of a
+    credential the rules know), and what is held is never more than one
+    file's additions in one commit. The deadline is kept by hand, since
+    `Popen` has no timeout of its own: past it the process group is killed
+    and the gap is stated, as before.
+
     `rename` is `scan_tree`'s: the names to mint under, applied after the
     template rule and before the finding is built, None for this scanner's
     own.
@@ -600,27 +614,19 @@ def scan_history(root, since_sha, ignore=(), rename=None):
             capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
         if walked.returncode == 0 and not walked.stdout.strip():
             return [], HISTORY_EMPTY_NOTE, True
-        proc = subprocess.run(
+        # stderr to a file of its own, never a pipe nobody drains while stdout
+        # is being read: git's advice on a bad revision is a few lines, but a
+        # pipe that fills would stall the very stream this loop reads.
+        errf = tempfile.TemporaryFile()
+        proc = subprocess.Popen(
             ["git", "-C", str(root), "log", "-p", "--no-color", "--no-merges",
              "--diff-filter=AM", rev],
-            capture_output=True, text=True, timeout=SCAN_TIMEOUT, check=False)
+            stdout=subprocess.PIPE, stderr=errf, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return [], HISTORY_GAP.format(
             reason=f"it timed out after {SCAN_TIMEOUT}s"), False
     except OSError as exc:
         return [], HISTORY_GAP.format(reason=f"git could not be run: {exc}"), False
-    if proc.returncode != 0:
-        # A non-zero git is not an exception -- `check=False` -- and it was
-        # swallowed exactly like one. The overwhelmingly common cause is a
-        # root that is not a git checkout at all, which is worth saying: the
-        # analysis then covers the working tree only, and nothing on the page
-        # would otherwise distinguish that from a repository with a clean
-        # history. Only git's FIRST stderr line is quoted; the rest is
-        # advice addressed to a human at a terminal.
-        reason = (proc.stderr or "").strip().splitlines()
-        return [], HISTORY_GAP.format(
-            reason=reason[0] if reason else f"git exited {proc.returncode}"), False
-    blob = proc.stdout
 
     # (rule, path) -> {"severity": ..., "commits": set-of-sha}. Keyed the
     # same way as the finding itself, with the set of commits the pair was
@@ -654,7 +660,13 @@ def scan_history(root, since_sha, ignore=(), rename=None):
                 group["commits"].add(commit_sha)
         added.clear()
 
-    for line in blob.splitlines():
+    deadline = time.monotonic() + SCAN_TIMEOUT
+    timed_out = False
+    for raw in proc.stdout:
+        if time.monotonic() > deadline:
+            timed_out = True
+            break
+        line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         commit_match = _COMMIT_HEADER.match(line)
         if commit_match is not None:
             sweep()
@@ -692,6 +704,31 @@ def scan_history(root, since_sha, ignore=(), rename=None):
         if not line.startswith("+") or line.startswith("+++"):
             continue
         added.append(line[1:])
+    if timed_out:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+        proc.wait()
+        errf.close()
+        return [], HISTORY_GAP.format(
+            reason=f"it timed out after {SCAN_TIMEOUT}s"), False
+    proc.stdout.close()
+    proc.wait()
+    errf.seek(0)
+    stderr = errf.read().decode("utf-8", errors="replace")
+    errf.close()
+    if proc.returncode != 0:
+        # A non-zero git is not an exception -- `check=False` -- and it was
+        # swallowed exactly like one. The overwhelmingly common cause is a
+        # root that is not a git checkout at all, which is worth saying: the
+        # analysis then covers the working tree only, and nothing on the page
+        # would otherwise distinguish that from a repository with a clean
+        # history. Only git's FIRST stderr line is quoted; the rest is
+        # advice addressed to a human at a terminal.
+        reason = stderr.strip().splitlines()
+        return [], HISTORY_GAP.format(
+            reason=reason[0] if reason else f"git exited {proc.returncode}"), False
     sweep()
 
     out = []
