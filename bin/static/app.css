@@ -1594,6 +1594,10 @@ textarea:focus,.dlg-b input:focus,.dlg-b select:focus{outline:none;border-color:
 .effslider:focus{outline:none}
 .effslider:focus::-webkit-slider-thumb{box-shadow:0 0 0 4px var(--accent-soft)}
 .effends{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-top:-2px}
+/* The author `display:flex` above outranks the UA sheet's [hidden], so the
+   captions an OpenCode ladder hides (paintEffortEnds: its variants are named,
+   not ranked) need their own rule, the way .navitem[hidden] does. */
+.effends[hidden]{display:none}
 .cwd-ro{cursor:pointer}
 .cwd-ro:hover:not(:disabled){border-color:var(--muted)}
 /* inherited from a project: shown, but plainly not yours to edit here */
@@ -2897,5 +2901,5 @@ details.secphase > summary.secphase-head::-webkit-details-marker{display:none}
 /* cover, not fill: a photo that is not square is cropped rather than stretched */
 .pf-face img{width:100%;height:100%;object-fit:cover;display:block}
 .pf-photo-a{display:flex;gap:8px;flex-wrap:wrap}
-/* ui-bundle: 382e6b7863cc4d9f576dac8f2ffb23475ac1b5466f8032f998e764c55b8193f7 */
-/* ui-sources: 20c3291e26bafeade05443e127d2cf014207e264929a6538658578bee5f90c6a */
+/* ui-bundle: 22b727c6be4d878c4152735279a8799fa3822869ef85d04cb86ac631a50471f0 */
+/* ui-sources: e54583add2bde199dc85a2f71982aa0f089515e2a0e8f3d0d2ac1bb2253a8005 */
