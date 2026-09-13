@@ -2252,12 +2252,23 @@ def load_live_detail(jid, start_i):
     # as it starts that phase and the stream file only at the launch, so
     # the sidecar with no stream yet names the phase the run is in.
     phase = ""
+    phase_detail = ""
     try:
         if not stream and logp and sp is not None and not sp.exists() \
                 and Path(logp + ".prepare").exists():
             phase = "prepare"
+            # The engine keeps prepare's stderr as that file, and prepare
+            # writes one flushed line per phase event ("prepare: sast-prepass
+            # done (412s)", "prepare: history 4000/21607 commits"): the last
+            # one is where the deterministic phase is right now.
+            with open(logp + ".prepare", "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                fh.seek(max(0, fh.tell() - 4096))
+                lines = [l.strip() for l in fh.read().decode("utf-8", "replace").splitlines() if l.strip()]
+            phase_detail = (lines[-1] if lines else "")[:200]
     except Exception:  # noqa: BLE001
-        phase = ""
+        phase = phase or ""
+        phase_detail = ""
     rec = {"id": jid, "start": start_i, "status": "running",
            "duration": max(0, int(time.time()) - start_i), "cost": None, "session": sess,
            "log": logp, "forced": False, "precheck": (pc.get("output") if isinstance(pc, dict) else "") or "",
@@ -2267,6 +2278,7 @@ def load_live_detail(jid, start_i):
            "cost_basis": "", "live": True}
     interactive = bool(job.get("interactive"))
     return {"record": rec, "live": True, "interactive": interactive, "phase": phase,
+            "phase_detail": phase_detail,
             "api_retries": _api_retries(stream),
             "agent": {"result": last_text, "num_turns": turns, "session": sess,
                       "stop_reason": "still running"},

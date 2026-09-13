@@ -5720,3 +5720,46 @@ def test_migrate_rules_is_refused_while_an_analysis_is_running(tmp_path):
 
     run(db, "finish", "--analysis", str(other), "--state", "done")
     assert run(db, "migrate-rules", env=env) == {"renamed": [], "findings": 0}
+
+
+def test_the_phases_run_at_once_and_the_progress_says_so(tmp_path, monkeypatch, capsys):
+    """Six phases of 0.3 s each used to be 1.8 s of wall-clock; on the
+    repository that measured this they were 1,721 s. They run at once now,
+    are read in the order they always were, and each one says when it is
+    done on stderr -- the channel the engine keeps as the run's .prepare
+    file, which the run dialog reads back."""
+    import time as clock
+    root = tmp_path / "repo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    (root / "README").write_text("seed\n")
+    db = tmp_path / "security.db"
+    monkeypatch.setattr(security_cli.adapters, "engine_path", lambda name: None)
+
+    def slow(value):
+        def phase(*a, **kw):
+            clock.sleep(0.3)
+            return value
+        return phase
+    monkeypatch.setattr(security_cli, "_scan_secrets",
+                        slow(([], [], 7, security_cli.PRODUCER_SECRETS, "warning")))
+    monkeypatch.setattr(security_cli.hygiene, "scan", slow([]))
+    monkeypatch.setattr(security_cli, "_scan_dependencies", slow(([], [], "osv", "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_iac", slow(([], [], "", "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_sbom", slow((None, [], "skipped")))
+    monkeypatch.setattr(security_cli, "_scan_sast", slow(([], [], "", "skipped")))
+
+    aid = open_analysis(db)
+    t0 = clock.perf_counter()
+    security_cli.main(["prepare", "--analysis", str(aid), "--root", str(root), "--offline",
+                       "--db", str(db)])
+    elapsed = clock.perf_counter() - t0
+    assert elapsed < 1.2, f"the six phases took {elapsed:.2f}s: they did not run at once"
+    err = capsys.readouterr().err
+    assert "prepare: started secrets, hygiene, dependencies, sbom, iac, sast-prepass" in err
+    assert "prepare: hygiene done (" in err and "prepare: sast-prepass done (" in err
+    assert "prepare: all phases done (" in err
+    # Read in order, whatever finished first: the table keeps its shape.
+    _, phases = _coverage_phases(db, aid)
+    assert [p["name"] for p in phases] == [
+        "scope", "secrets", "hygiene", "dependencies", "sbom", "iac", "sast-prepass"]

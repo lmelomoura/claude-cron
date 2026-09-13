@@ -455,6 +455,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The deterministic phase runs its scanners at once and says where it
+  is.** The secret sweeps, hygiene, the trivy pair, syft and semgrep ran
+  one after the other (1,721 s on the measured repository); they run at
+  once now, the two gitleaks passes and the two built-in sweeps included,
+  read in the order they always were, so the phase lasts its slowest
+  scanner. `prepare` writes a flushed line per phase event, and every
+  2,000 history commits, to the run's `.prepare` file, and the run dialog
+  shows the last one while the phase runs.
+- **The SAST pre-pass note names the files Semgrep could not fully parse**
+  (up to eight, then how many more), so a generated or vendored file among
+  them can go to `ignore_paths`; a count alone was nothing to act on.
 - **The history sweeps of the deterministic phase have a budget of their
   own and a cursor.** `AGENTLOOP_SECURITY_HISTORY_TIMEOUT` (1800 s) bounds
   the git history passes of both secret scanners, apart from the engines'

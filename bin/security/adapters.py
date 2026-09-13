@@ -31,6 +31,7 @@ import os
 import re
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path, PurePosixPath
 
 from . import deps, engines, ignores, osv, report, secrets, taxonomy
@@ -689,12 +690,24 @@ def gitleaks_scan(root, ignore_paths=(), since=None):
         # for the same cursor, so the two passes of one analysis cover the
         # same commits.
         log_opts = ["--log-opts", f"{since}..HEAD"] if since else []
-        history, history_note = (
-            (None, HISTORY_UNREADABLE.format(reason=why))
-            if state == HISTORY_GONE
-            else engines.run_json("gitleaks", ["git", ".", *log_opts, *common], root,
-                                  timeout=engines.HISTORY_TIMEOUT))
-        tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
+        # BOTH PASSES AT ONCE. They read the same checkout, each writes its
+        # own report file (`run_json` names it), and the history pass is the
+        # long one: on the measured repository it ran to its budget while the
+        # tree pass waited behind it. The recording order below is untouched
+        # -- history first, then tree -- because it is the order the results
+        # are READ in, not the order the processes finish.
+        if state == HISTORY_GONE:
+            history, history_note = None, HISTORY_UNREADABLE.format(reason=why)
+            tree, tree_note = engines.run_json("gitleaks", ["dir", ".", *common], root)
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                history_job = pool.submit(engines.run_json, "gitleaks",
+                                          ["git", ".", *log_opts, *common], root,
+                                          timeout=engines.HISTORY_TIMEOUT)
+                tree_job = pool.submit(engines.run_json, "gitleaks",
+                                       ["dir", ".", *common], root)
+            history, history_note = history_job.result()
+            tree, tree_note = tree_job.result()
 
     if history is None and tree is None:
         # BOTH reasons, not just the tree's. They are routinely different --
@@ -1956,8 +1969,13 @@ SAST_UNPLACED_NOTE = ("A further {count} {rules} loaded under namespaces no "
 # A file Semgrep could not parse was not analysed, whatever the rule count says
 # about its language. The engine's own message for it is NEVER quoted back:
 # that message is the file's source (see `engines.PURGE`).
-SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep, so "
-                   "part of what {they} {hold} was not analysed at all.")
+SAST_PARSE_NOTE = ("{count} {files} could not be fully parsed by Semgrep ({listed}), "
+                   "so part of what {they} {hold} was not analysed at all; a "
+                   "generated or vendored file among them belongs in the "
+                   "project's ignore_paths.")
+# How many of the unparsed files the note names before it counts the rest:
+# enough to act on, not a directory listing.
+SAST_PARSE_LISTED = 8
 
 SAST_PREPASS_NOTE = ("Semgrep is a pre-pass here, not the SAST pass: it "
                      "matched patterns, and the analysis that follows is what "
@@ -2445,19 +2463,29 @@ def semgrep_breakdown(data):
     return coverage, unplaced
 
 
-def _semgrep_unparsed(data) -> int:
-    """How many distinct files Semgrep reported an error against.
+def _semgrep_unparsed(data) -> list:
+    """The distinct files Semgrep reported an error against, sorted.
 
-    The PATHS are counted, never the messages: `errors[].message` quotes the
-    file it could not parse (see `engines.PURGE`), which is why the note says
-    a number and not a reason.
+    The PATHS, never the messages: `errors[].message` quotes the file it
+    could not parse (see `engines.PURGE`), which is why the note names a
+    path and never a reason. Named rather than counted (as they used to be)
+    because a count is not actionable: an operator who reads "10 files"
+    cannot tell a generated bundle, which belongs in ignore_paths, from a
+    source file whose syntax the parser did not fully take.
     """
     errors = data.get("errors") if isinstance(data, dict) else None
     if not isinstance(errors, list):
-        return 0
-    return len({e.get("path") for e in errors
-                if isinstance(e, dict) and isinstance(e.get("path"), str)
-                and e.get("path").strip()})
+        return []
+    return sorted({e.get("path").strip() for e in errors
+                   if isinstance(e, dict) and isinstance(e.get("path"), str)
+                   and e.get("path").strip()})
+
+
+def _listed_paths(paths, limit=SAST_PARSE_LISTED) -> str:
+    """Up to `limit` paths, then how many more."""
+    shown = ", ".join(paths[:limit])
+    rest = len(paths) - limit
+    return shown if rest <= 0 else f"{shown} and {rest} more"
 
 
 # The `errors[].level` words that mean Semgrep RECOVERED and kept scanning.
@@ -2632,10 +2660,12 @@ def semgrep_notes(data, version: str, findings) -> list[str]:
             breakdown=", ".join(f"{lang} {n}" for lang, n in unplaced)))
     unparsed = _semgrep_unparsed(data)
     if unparsed:
+        count = len(unparsed)
         notes.append(SAST_PARSE_NOTE.format(
-            count=unparsed, files="file" if unparsed == 1 else "files",
-            they="it" if unparsed == 1 else "they",
-            hold="holds" if unparsed == 1 else "hold"))
+            count=count, files="file" if count == 1 else "files",
+            listed=_listed_paths(unparsed),
+            they="it" if count == 1 else "they",
+            hold="holds" if count == 1 else "hold"))
     notes.append(SAST_PREPASS_NOTE)
     if findings:
         notes.append(SAST_IDENTITY_NOTE)

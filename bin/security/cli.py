@@ -37,6 +37,7 @@ import re
 import sqlite3
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -805,8 +806,17 @@ def _scan_secrets(root, ignore, sweeps=None):
     if adapters.engine_path("gitleaks"):
         engine_since, engine_cached, engine_restarted = _resume_sweep(
             root, sweeps, PRODUCER_GITLEAKS)
-        engine, notes, history, tree = adapters.gitleaks_scan(
-            root, ignore, since=engine_since)
+        # THE ENGINE AND THE BUILT-IN SWEEPS AT ONCE: gitleaks (its own two
+        # passes, see `gitleaks_scan`), the built-in history sweep and the
+        # built-in tree sweep read the same checkout and write nothing to it,
+        # and each was a minutes-long wait for the next on the measured
+        # repository. Collected in the order the code below always read them.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            engine_job = pool.submit(adapters.gitleaks_scan, root, ignore, since=engine_since)
+            history_job = pool.submit(secrets.scan_history, root, since, ignore,
+                                      rename=_SECRET_RENAMES)
+            tree_job = pool.submit(secrets.scan_tree, root, ignore, rename=_SECRET_RENAMES)
+        engine, notes, history, tree = engine_job.result()
         if engine is not None:
             # The engine's list is its history readings then its tree
             # readings (see `gitleaks_scan` on why that order); the carried
@@ -827,12 +837,10 @@ def _scan_secrets(root, ignore, sweeps=None):
                 restart_notes.append(HISTORY_RESTART_NOTE.format(
                     scanner=_SCANNER_NAMES[PRODUCER_GITLEAKS],
                     sha7=sweeps[PRODUCER_GITLEAKS]["since"][:7]))
-            history_findings, history_note, swept, reached = secrets.scan_history(
-                root, since, ignore, rename=_SECRET_RENAMES)
+            history_findings, history_note, swept, reached = history_job.result()
             history_findings = _carry_history(cached, history_findings, ignore)
             _record_sweep(sweeps, PRODUCER_SECRETS, reached, history_findings)
-            tree_findings, tree_note, lines = secrets.scan_tree(
-                root, ignore, rename=_SECRET_RENAMES)
+            tree_findings, tree_note, lines = tree_job.result()
             findings = _merge_secret_readings(engine, history_findings + tree_findings)
             for finding in findings:
                 finding["producer"] = diff.PRODUCER_SEPARATOR.join(finding["seen_by"])
@@ -856,11 +864,20 @@ def _scan_secrets(root, ignore, sweeps=None):
     # The same names as the union path mints, for the reason the docstring
     # gives: an identity that changed with the scanner on the machine read
     # `fixed` beside `new` for one credential.
-    history_findings, history_note, _swept, reached = secrets.scan_history(
-        root, since, ignore, rename=_SECRET_RENAMES)
+    if adapters.engine_path("gitleaks"):
+        # The engine ran (above) and answered nothing usable: its threads are
+        # done, and the built-in results are already in hand.
+        history_findings, history_note, _swept, reached = history_job.result()
+        tree_findings, tree_note, lines = tree_job.result()
+    else:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            history_job = pool.submit(secrets.scan_history, root, since, ignore,
+                                      rename=_SECRET_RENAMES)
+            tree_job = pool.submit(secrets.scan_tree, root, ignore, rename=_SECRET_RENAMES)
+        history_findings, history_note, _swept, reached = history_job.result()
+        tree_findings, tree_note, lines = tree_job.result()
     history_findings = _carry_history(cached, history_findings, ignore)
     _record_sweep(sweeps, PRODUCER_SECRETS, reached, history_findings)
-    tree_findings, tree_note, lines = secrets.scan_tree(root, ignore, rename=_SECRET_RENAMES)
     return (history_findings + tree_findings,
             [*restart_notes, history_note, tree_note, *notes], lines, PRODUCER_SECRETS,
             coverage.WARNING)
@@ -1309,8 +1326,51 @@ def cmd_prepare(args):
         scanner: dict(zip(("since", "cached"),
                           ledger.history_sweep(conn, project, repo, branch, scanner)))
         for scanner in (PRODUCER_SECRETS, PRODUCER_GITLEAKS)}
+    # `components` is read regardless of `offline` or which vulnerability
+    # source runs: `deps.inventory` never touches the network, and the SBOM
+    # below is built from it whenever Syft does not. Read here, before the
+    # phases fan out, because two of them take it.
+    components = deps.inventory(root)
+
+    # THE PHASES RUN AT ONCE, AND ARE READ IN ORDER. Every phase is a
+    # subprocess or a walk of its own, none reads another's result, and on
+    # the repository that measured this (969,185 lines, 21,607 commits) the
+    # sum of them was 1,721 s where the slowest alone is a fraction of that.
+    # The two trivy passes share one worker: two trivy processes at once
+    # contend for the one vulnerability database cache. Everything below
+    # this block reads plain variables in the order it always did, so the
+    # paragraph, the table and the ledger writes are byte-for-byte what a
+    # serial run produces; only the wall-clock changed. A phase that raises
+    # still fails the whole prepare, after the others have been waited for,
+    # so no scanner is left running under a dead parent.
+    started = time.perf_counter()
+    def _progress(text):
+        print(f"prepare: {text}", file=sys.stderr, flush=True)
+    _progress("started secrets, hygiene, dependencies, sbom, iac, sast-prepass")
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {
+            "secrets": pool.submit(_scan_secrets, root, ignore, sweeps),
+            "hygiene": pool.submit(hygiene.scan, root, ignore),
+            "dependencies+iac": pool.submit(
+                lambda: (_scan_dependencies(root, components, args.offline, ignore),
+                         _scan_iac(root, args.offline, ignore))),
+            "sbom": pool.submit(_scan_sbom, root, components),
+            "sast-prepass": pool.submit(_scan_sast, root, args.offline, ignore),
+        }
+        for done in as_completed(futures.values()):
+            name = next(n for n, f in futures.items() if f is done)
+            _progress(f"{name} done ({int(time.perf_counter() - started)}s)"
+                      if done.exception() is None else
+                      f"{name} FAILED ({int(time.perf_counter() - started)}s)")
     secret_findings, secret_notes, tree_lines, secret_producer, secret_status = (
-        _scan_secrets(root, ignore, sweeps))
+        futures["secrets"].result())
+    hygiene_findings = futures["hygiene"].result()
+    (dep_findings, dep_notes, dep_producer, dep_status), \
+        (iac_findings, iac_notes, iac_producer, iac_status) = futures["dependencies+iac"].result()
+    sbom_document, sbom_notes, sbom_status = futures["sbom"].result()
+    sast_findings, sast_notes, sast_producer, sast_status = futures["sast-prepass"].result()
+    _progress(f"all phases done ({int(time.perf_counter() - started)}s)")
+
     for scanner, sweep in sweeps.items():
         if sweep.get("reached"):
             ledger.save_history_sweep(conn, project, repo, branch, scanner,
@@ -1318,8 +1378,7 @@ def cmd_prepare(args):
     findings = _produced_by(secret_findings, secret_producer, produced)
     # Hygiene has no engine and no fallback -- it is our own walk over the
     # tree, so it runs in every configuration and is always its own producer.
-    findings += _produced_by(hygiene.scan(root, ignore), PRODUCER_HYGIENE,
-                             produced)
+    findings += _produced_by(hygiene_findings, PRODUCER_HYGIENE, produced)
     secret_notes = [n for n in secret_notes if n]
     notes = list(secret_notes)
 
@@ -1356,15 +1415,8 @@ def cmd_prepare(args):
         # have to open a report to find out the edit did nothing.
         print(f"prepare: {unknown_switch}", file=sys.stderr)
 
-    # `components` is read regardless of `offline` or which vulnerability
-    # source runs: `deps.inventory` never touches the network, and the SBOM
-    # below is built from it whenever Syft does not.
-    components = deps.inventory(root)
-    dep_findings, dep_notes, dep_producer, dep_status = _scan_dependencies(
-        root, components, args.offline, ignore)
     findings += _produced_by(dep_findings, dep_producer, produced)
 
-    sbom_document, sbom_notes, sbom_status = _scan_sbom(root, components)
     if sbom_document is None:
         # NOTHING IS STORED, so nothing may be described. `DEP_SBOM_NOTE` is
         # appended by `trivy_scan` unconditionally and asserts what "the SBOM"
@@ -1409,8 +1461,6 @@ def cmd_prepare(args):
     notes += both
     notes += sbom_notes
 
-    iac_findings, iac_notes, iac_producer, iac_status = _scan_iac(
-        root, args.offline, ignore)
     findings += _produced_by(iac_findings, iac_producer, produced)
     iac_notes = [n for n in iac_notes if n]
     notes += iac_notes
@@ -1419,8 +1469,6 @@ def cmd_prepare(args):
     # alone: what it produces is a pre-pass the agent's own SAST pass then
     # triages, so its sentences read after everything the deterministic half
     # settled by itself.
-    sast_findings, sast_notes, sast_producer, sast_status = _scan_sast(
-        root, args.offline, ignore)
     findings += _produced_by(sast_findings, sast_producer, produced)
     sast_notes = [n for n in sast_notes if n]
     notes += sast_notes

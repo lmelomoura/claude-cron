@@ -4345,8 +4345,9 @@ function renderLog(d){
              // operator reads a run that has not started as one that is stuck.
              : (d.live && d.phase === "prepare")
                  ? 'Running the deterministic phase before the agent (secrets in the tree and in the '
-                   + 'whole git history, dependencies, SBOM, hygiene). On a long history this takes '
-                   + 'minutes; the agent starts when it ends.'
+                   + 'whole git history, dependencies, SBOM, hygiene, IaC, the SAST pre-pass). On a long '
+                   + 'history this takes minutes; the agent starts when it ends.'
+                   + (d.phase_detail ? ' · ' + esc(d.phase_detail) : '')
              : d.live ? 'Waiting for the first turn…'
                     : 'No transcript was captured for this run. It finished, and its cost '
                       + 'and turn count were recorded, but the log could not be read back — '

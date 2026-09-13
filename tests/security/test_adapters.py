@@ -3608,3 +3608,19 @@ def test_the_two_dependency_producers_agree_on_scope(tmp_path):
         "trivy reported no dev-only dependency at all, which is what happens "
         "without --include-dev-deps: the dev finding is not ranked lower, it "
         "is missing, and the two producers then disagree about what EXISTS")
+
+
+def test_the_sast_prepass_note_names_the_files_semgrep_could_not_parse():
+    """"10 files could not be fully parsed" is a count nobody can act on; the
+    paths are, and only the paths -- never the message, which quotes the
+    code. Eight are named, the rest counted."""
+    from security.adapters import _semgrep_unparsed, _listed_paths, SAST_PARSE_NOTE
+    data = {"errors": [{"path": "b.php", "message": "x"}, {"path": "a.js", "message": "y"},
+                       {"path": "a.js", "message": "again"}, {"level": "warn"}]}
+    assert _semgrep_unparsed(data) == ["a.js", "b.php"]
+    assert _listed_paths(["a.js", "b.php"]) == "a.js, b.php"
+    many = [f"f{i}.js" for i in range(12)]
+    assert _listed_paths(many) == ", ".join(many[:8]) + " and 4 more"
+    note = SAST_PARSE_NOTE.format(count=2, files="files", listed="a.js, b.php", they="they", hold="hold")
+    assert "(a.js, b.php)" in note and "ignore_paths" in note
+    assert _semgrep_unparsed({"errors": "nope"}) == [] and _semgrep_unparsed({}) == []
