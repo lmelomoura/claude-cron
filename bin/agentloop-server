@@ -1492,6 +1492,7 @@ def delete_run(jid, start):
         logp = Path(target.get("log", ""))
         if str(logp.resolve()).startswith(str(_logs_root())):
             extra = [logp.with_name(logp.stem + ".stream.ndjson.raw"),
+                     logp.with_name(logp.stem + ".stream.ndjson.export"),
                      Path(str(logp) + ".prepare"),
                      Path(str(logp) + ".watchdog"), Path(str(logp) + ".stdin"),
                      Path(str(logp) + ".turnend")]
@@ -1549,6 +1550,7 @@ def _forget_stranded_row(jid, start, removed):
             if str(logp) and str(logp.resolve()).startswith(str(_logs_root())):
                 for p in (logp, logp.with_name(logp.stem + ".stream.ndjson"),
                           logp.with_name(logp.stem + ".stream.ndjson.raw"),
+                          logp.with_name(logp.stem + ".stream.ndjson.export"),
                           logp.with_name(logp.stem + ".precheck.txt"),
                           Path(str(logp) + ".err"), Path(str(logp) + ".prepare"),
                           Path(str(logp) + ".watchdog")):

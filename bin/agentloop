@@ -4554,7 +4554,10 @@ JSON
   # goes to <base>.export beside the run's own log, not to data/, and is
   # gone after the read: a kill mid-export leaves the transcript next to
   # the run it belongs to.
+  # DATA_DIR points nowhere here on purpose: the mktemp fallback cannot
+  # answer, so only the <base>.export path can produce the model.
   ( AGENTLOOP_OPENCODE_BIN="$BASE_DIR/test/fake-opencode"; FAKE_RAN_MODEL=pdm_ai/based; export FAKE_RAN_MODEL
+    DATA_DIR="$tmp/ocx/nowhere"
     [ "$(opencode_export_model "$tmp/ocx" ses_x1 "$tmp/ocx/r1.stream.ndjson")" = "pdm_ai/based" ] || exit 1
     [ ! -e "$tmp/ocx/r1.stream.ndjson.export" ] || exit 2
     [ -z "$(find "$DATA_DIR" -maxdepth 1 -name '.opencode-export.*' 2>/dev/null)" ] || exit 3

@@ -83,7 +83,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     (`--pure --auto --print-logs --log-level ERROR --dir --title`), and
     `platform_finish` reading the model that ran from `opencode export`,
     read from a file, never a pipe: through a pipe the CLI's output stops at
-    64 KiB (measured 36), and so is the catalog. `platform_normalizer` is
+    64 KiB (measured 36), and so is the catalog; the file sits beside the
+    run's `.raw` and the dashboard's delete removes it with the other
+    sidecars. `platform_normalizer` is
     what the launch now asks for, and
     `prepare_inline` the capability that says which platform lets the
     security agent run `prepare` itself.
