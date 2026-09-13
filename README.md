@@ -826,9 +826,10 @@ run whose stream is still empty after `stall_timeout_seconds` is killed
 whatever its CPU does** — a CLI whose provider never answered. Measured on
 OpenCode: a process whose provider accepted the connection and never replied,
 or a resume the CLI took to another directory, hangs for ever with no output
-and still gains about one CPU second every 75 seconds of idling, which the CPU
-signal read as life, so the stall never fired and, with no default
-`timeout_seconds`, the run held its slot for ever. Every healthy run of every
+(both measured), and the hung process of the second case still gained about
+one CPU second every 75 seconds of idling, which the CPU signal read as
+life, so the stall never fired and, with no default `timeout_seconds`, the
+run held its slot for ever. Every healthy run of every
 platform writes its first event long before the default twenty minutes (the
 `init` of Claude Code and the `thread.started` of Codex at once, OpenCode's
 `step_start` when the model starts answering, tens of seconds measured). The
@@ -971,7 +972,7 @@ draws `Bash` with the command; the `step_finish` events summed into one
 `result` with the tokens and the cost), the raw stream is kept beside it as
 `<run>.stream.ndjson.raw`, and the first line is written the moment the CLI's
 first event arrives. The session id is the `sessionID` every event carries. A
-resume is `opencode run -s <session> --dir <run dir>`, and `--dir` is not
+resume is `opencode run --dir <run dir> -s <session>`, and `--dir` is not
 optional: a session resumes only from the directory it was born in — from any
 other directory the CLI runs the turn in a second instance the command never
 hears, spends it, and hangs for ever without writing a byte (measured) — so
@@ -1035,7 +1036,7 @@ USD per 1,000,000 tokens like the `openai` rows (`input`, `cached_input` and
 `output` are required; `cache_write` may be left out, and reads as 0):
 
 ```json
-"opencode": {"pdm_ai/glm-5.3-flash": {"input": 0.033, "cached_input": 0.033, "output": 0.14, "cache_write": 0}}
+"opencode": {"myproxy/gpt-oss-120b": {"input": 0.17, "cached_input": 0.17, "output": 0.59, "cache_write": 0}}
 ```
 
 `install.sh` copies `config/pricing.example.json` — which ships an empty

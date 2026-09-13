@@ -146,7 +146,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   spent — a run on a platform or a model that is off; `set-field`, `create`
   and `project-set` refuse the same at write time. Overview and Jobs carry a
   strip while nothing is configured, and *New job* opens Settings. OpenCode
-  is listed and detected; its engine is a later release. What it cost to
+  is listed and detected; its engine is the entry above. What it cost to
   not have it: the model picker offered the whole catalog, so a job on the
   most expensive OpenAI model was one click away, and a job on a CLI nobody
   had signed in to found out at its first launch, hours later.
@@ -160,7 +160,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     nothing enabled, is named by `status`, the tick and the dashboard's strip,
     and is never written over.
   - The launch refusals, in this order and one line each: a planned platform
-    (`opencode is not supported yet`), one switched off in Settings, a
+    (`opencode is not supported yet` on that day; none today, the mechanism
+    stays for the next one), one switched off in Settings, a
     platform with no model switched on, the CLI's own readiness, and — after
     the catalog check — a model the CLI knows but Settings did not enable,
     naming the ones it did. A security analysis passes the same gates; a
