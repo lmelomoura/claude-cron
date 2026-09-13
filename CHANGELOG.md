@@ -112,6 +112,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     engine-side before the agent (the tool's own timeout was not measured
     and `prepare` can take minutes), and the prompt names the skill by name
     and by path. Nothing new to link: OpenCode reads `~/.claude/skills`.
+  - The dashboard: OpenCode in the Platform combo of the three editors
+    (flat model list naming the provider, the model's variants as the
+    effort ladder, the two modes, Interactive off, the cost note per
+    platform), the badge on cards, tables and the run modal, and the
+    Settings card doing what the other two do (Test, the catalog with
+    provider, price, variants and "no tools", the switch) instead of
+    "Coming soon".
 
 - **Settings › Platforms, and `config/platforms.json`: a job may only pick a
   platform and a model somebody switched on.** The Settings item comes out of

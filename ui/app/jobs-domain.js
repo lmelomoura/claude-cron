@@ -181,10 +181,10 @@ export function sortJobs(rows, key, dir){
 // card and its row: ok, a planned platform (never runs yet), a platform
 // switched off, a model switched off. No verdict until the registry arrives.
 export function platformState(j, project, platforms){
-  if(j && j.platform === "opencode") return "planned";
   const p = platformOf(j, project);
   const entry = (platforms || {})[p];
   if(!entry || entry.enabled === undefined) return "ok";
+  if(entry.supported === false) return "planned";
   if(!entry.usable) return "platform_disabled";
   const model = eff(j, "model", "") || entry.default_model || "";
   // One rule for "is this model switched on" -- modelEnabled (editor-domain.js)

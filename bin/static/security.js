@@ -134,7 +134,7 @@
     const v = secCfg(name).default_profile;
     return SEC_PROFILES.includes(v) ? v : "standard";
   };
-  var secPlatformLabel = (p) => p === "openai" ? "OpenAI" : "Anthropic";
+  var secPlatformLabel = (p) => ({ anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode" })[p] || "Anthropic";
   var secSevRank = (s) => {
     const i = SEV_ORDER.indexOf(s);
     return i < 0 ? SEV_ORDER.length : i;
@@ -5224,5 +5224,5 @@
     SEC_PROFILES
   };
 })();
-/* ui-bundle: 44f47183af1aa235594635ff6b8c2a291dd2b452521f905f642d81aa94b99a9a */
-/* ui-sources: e66ebd00bc79ef1e58796748580e822548736164cb5a0ecce9bb6600aa54f33c */
+/* ui-bundle: c758400fed6bb1471fdaba9551e4808a69f0dbef07f5a15e23445edc110778c6 */
+/* ui-sources: 6e0358b5e6e89e8a819b87b1564c7e7b1a5a254a21778bc544007c1083d32852 */

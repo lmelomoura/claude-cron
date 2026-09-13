@@ -425,10 +425,14 @@ code{font:11.5px ui-monospace,"SF Mono",Menlo,monospace;
 /* the platform a run went through -- drawn only when it is not the default */
 .platbadge{font-size:10px;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));
   border-radius:5px;padding:1px 6px;margin-left:7px;vertical-align:1px;cursor:help}
-/* The platform every run has always had. Both are named, so an unbadged row
-   never has to be read as either "Anthropic" or "not known yet"; this one is
-   muted so the eye still lands on the row that changed CLI. */
-.platbadge.alt{color:var(--muted);border-color:var(--line)}
+/* Every run names its platform now, three of them, so an unbadged row never
+   has to be read as "Anthropic" or "not known yet". OpenAI keeps the base
+   rule's own colour (the first CLI to earn a badge distinct from Anthropic's);
+   Anthropic and OpenCode share the quieter tint below -- OpenCode is a third
+   colour nothing has invented yet, so it reads with the same muted ink
+   Anthropic already had rather than a new one. */
+.platbadge.plat-openai{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,var(--line))}
+.platbadge.plat-anthropic,.platbadge.plat-opencode{color:var(--muted);border-color:var(--line)}
 /* a cost we computed ourselves (~), and a run that has no figure at all */
 .cost-est{cursor:help}
 .cost-none{color:var(--muted);cursor:help}

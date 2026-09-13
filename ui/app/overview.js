@@ -39,7 +39,7 @@
 import { $, AL, icon, eff, fmtAgo, fmtDur, money, effortLabel, fmtExpiresIn,
          resumeInFlight, markIfPending, projById } from "./page.js";
 import { jobFacts, platformState, platformChip } from "./jobs-domain.js";
-import { platformOf } from "./editor-domain.js";
+import { platformOf, platformLabel } from "./editor-domain.js";
 import { el, pageHeader, kpiCard } from "./chrome.js";
 
 // A percentage of nothing is not 0%, it is nothing -- pulseHtml's own pct()
@@ -650,7 +650,7 @@ export function jobCard(j){
   // opus" on every card would say nothing; "OpenAI · gpt-5.6-sol" says the
   // one thing that changed.
   const plat = platformOf(j, p);
-  cfg.appendChild(bit(plat === "openai" ? "OpenAI · " + model : model, own("model") || own("platform")));
+  cfg.appendChild(bit(plat === "anthropic" ? model : platformLabel(plat) + " · " + model, own("model") || own("platform")));
   if(effortLabel(eff(j, "effort", "")) !== "default"){
     cfg.appendChild(bit(effortLabel(eff(j, "effort", "")), own("effort")));
   }

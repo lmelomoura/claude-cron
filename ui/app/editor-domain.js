@@ -27,6 +27,16 @@ export function changedKeys(now, clean){
   return Object.keys(now).filter(k => now[k] !== clean[k]);
 }
 
+// The three platforms this page knows how to run a job on, and the label
+// their combos and chips show for each. platformKey is the key a platform
+// value reads /api/models under: the value itself when the page knows it,
+// anthropic for anything else (a hand-edited unknown) -- the one rule every
+// per-platform lookup below reads instead of its own "openai ? openai :
+// anthropic" guess.
+export const KNOWN_PLATFORMS = ["anthropic", "openai", "opencode"];
+export const PLATFORM_LABELS = {anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode"};
+export function platformKey(p){ return KNOWN_PLATFORMS.includes(p) ? p : "anthropic"; }
+
 // Effort: slider position <-> CLI value. Index 0 is always "" (unset: the
 // CLI decides), so a slider's stops are [""] + the platform's levels. The
 // levels are the PLATFORM's -- and on OpenAI the chosen MODEL's -- read off
@@ -46,12 +56,16 @@ export function effortsFor(platform, model, platforms){
   const p = (platforms || {})[platform || "anthropic"];
   if(!p) return FALLBACK_EFFORTS.slice();
   let levels = null;
-  if((platform || "anthropic") === "openai" && model){
+  if(platformKey(platform) !== "anthropic" && model){
     const m = (p.models || []).find(x => x && x.v === model);
-    if(m && Array.isArray(m.efforts) && m.efforts.length) levels = m.efforts;
+    // A model FOUND with an empty `efforts` array is a model without variants
+    // -- its own, explicit answer, kept even though it is falsy, rather than
+    // falling through to the platform's broader union below (that fallback is
+    // for a model NOT found at all, which leaves `levels` untouched at null).
+    if(m && Array.isArray(m.efforts)) levels = m.efforts;
   }
   if(!levels && Array.isArray(p.efforts) && p.efforts.length) levels = p.efforts;
-  if(!levels) return [""];   // listed, but with no levels: nothing to offer beyond unset
+  if(!levels || !levels.length) return [""];   // listed, but with no levels: nothing to offer beyond unset
   return [""].concat(levels.filter(l => typeof l === "string" && l));
 }
 
@@ -97,7 +111,7 @@ export const FALLBACK_PERMISSIONS = {
 };
 
 export function permissionsFor(platform, platforms){
-  const key = platform === "openai" ? "openai" : "anthropic";
+  const key = platformKey(platform);
   const p = (platforms || {})[key];
   const list = (p && Array.isArray(p.permissions) && p.permissions.length) ? p.permissions : FALLBACK_PERMISSIONS[key];
   return list.map(o => ({v: o.v, label: o.label || o.v}));
@@ -106,6 +120,7 @@ export function permissionsFor(platform, platforms){
 // platform_default_permission's two answers, mirrored: what a job and what a
 // security analysis run as when nothing is set.
 export function defaultPermissionFor(platform, kind){
+  if(platform === "opencode") return "full-access";
   if(platform === "openai") return kind === "security" ? "full-access" : "workspace-write";
   // Both kinds, for the reason the engine's platform_default_permission gives:
   // every run here is headless, and dontAsk denies every tool it has no
@@ -115,7 +130,7 @@ export function defaultPermissionFor(platform, kind){
 }
 
 export function defaultModelFor(platform, platforms){
-  const key = platform === "openai" ? "openai" : "anthropic";
+  const key = platformKey(platform);
   const p = (platforms || {})[key];
   if(p && p.default_model) return p.default_model;
   return key === "anthropic" ? "opus" : "";
@@ -141,7 +156,7 @@ export const DISABLED_SUFFIX = " (disabled in Settings)";
 // OTHER id of that family still stays off. The one rule modelOptionsFor,
 // platformState and the editor's Agent step all read.
 export function modelEnabled(platform, model, platforms){
-  const key = platform === "openai" ? "openai" : "anthropic";
+  const key = platformKey(platform);
   const p = (platforms || {})[key];
   if(!p || !Array.isArray(p.models_enabled)) return true;
   if(!model) return true;
@@ -169,7 +184,7 @@ export function modelEnabled(platform, model, platforms){
 // registry is still unknown, and never for a family value some concrete id
 // of it keeps enabled): the editor shows the truth, never rewrites.
 export function modelOptionsFor(platform, platforms, groupFn, current){
-  const key = platform === "openai" ? "openai" : "anthropic";
+  const key = platformKey(platform);
   const p = (platforms || {})[key];
   const enabledList = (p && Array.isArray(p.models_enabled)) ? p.models_enabled : null;
   const keep = (v) => !enabledList || enabledList.includes(v);
@@ -177,6 +192,17 @@ export function modelOptionsFor(platform, platforms, groupFn, current){
   if(key === "anthropic"){
     const ids = ((p && Array.isArray(p.models)) ? p.models : []).filter(keep);
     opts = groupFn ? groupFn(ids) : ids.map(v => ({v, label: v}));
+  }else if(key === "opencode"){
+    // Flat, like OpenAI's own list just below -- but named by provider
+    // instead of described, since the catalog gives OpenCode a provider per
+    // model and no free-text description at all. The same two flags OpenAI
+    // already carries (no price, an id Settings switched off) plus a third
+    // this platform alone has: a model the catalog says makes no tool calls.
+    const list = ((p && Array.isArray(p.models)) ? p.models : []).filter(m => keep(m.v));
+    opts = list.map(m => ({v: m.v, label: (m.label || m.v)
+      + (m.provider ? " (" + m.provider + ")" : "")
+      + (m.priced === false ? " · no price" : "")
+      + (m.tools === false ? " · no tools" : "")}));
   }else{
     const list = ((p && Array.isArray(p.models)) ? p.models : []).filter(m => keep(m.v));
     const noPrice = (m) => m.priced === false ? " · no price" : "";
@@ -200,15 +226,13 @@ export function modelOptionsFor(platform, platforms, groupFn, current){
 // project's platform; an unknown project value is anthropic as well.
 export function platformOf(job, project){
   const own = job && job.platform;
-  if(own) return own === "openai" ? "openai" : "anthropic";
+  if(own) return platformKey(own);
   const pp = project && project.platform;
-  if(pp === "anthropic" || pp === "openai") return pp;
+  if(KNOWN_PLATFORMS.includes(pp)) return pp;
   return "anthropic";
 }
 
-export function platformLabel(p){ return p === "openai" ? "OpenAI" : "Anthropic"; }
-
-export const PLATFORM_LABELS = {anthropic: "Anthropic", openai: "OpenAI", opencode: "OpenCode"};
+export function platformLabel(p){ return PLATFORM_LABELS[p] || "Anthropic"; }
 
 // Whether /api/models has told this page what Settings switched on: the
 // registry rides on every platform entry as `enabled`. A payload without it
@@ -222,17 +246,12 @@ export function registryKnown(platforms){
 // until the registry arrives), plus the job's current one flagged when it is
 // not among them -- the editor never rewrites a job on its own.
 export function platformOptions(platforms, current){
-  const known = ["anthropic", "openai"];
+  const known = KNOWN_PLATFORMS;
   const have = registryKnown(platforms);
   const out = known.filter(p => !have || ((platforms[p] || {}).usable === true))
                    .map(p => ({v: p, label: PLATFORM_LABELS[p]}));
   if(current && !out.some(o => o.v === current)){
-    // opencode has no Settings switch to have been turned off -- it is a
-    // platform that does not exist here yet, the same fact platformChip's
-    // "planned" state names on the job's own card/row. The generic disabled
-    // suffix would send an operator looking for a toggle that is not there.
-    const label = current === "opencode" ? PLATFORM_LABELS.opencode + " (not supported yet)"
-                : (PLATFORM_LABELS[current] || current) + DISABLED_SUFFIX;
+    const label = (PLATFORM_LABELS[current] || current) + DISABLED_SUFFIX;
     out.push({v: current, label, flagged: true});
   }
   return out;
@@ -240,7 +259,7 @@ export function platformOptions(platforms, current){
 
 // How many models the catalog carries that Settings keeps off the list.
 export function hiddenModelCount(platform, platforms){
-  const key = platform === "openai" ? "openai" : "anthropic";
+  const key = platformKey(platform);
   const p = (platforms || {})[key];
   if(!p || !Array.isArray(p.models_enabled) || !Array.isArray(p.models)) return 0;
   const ids = p.models.map(m => typeof m === "string" ? m : m.v);

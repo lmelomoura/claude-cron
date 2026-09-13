@@ -17,7 +17,7 @@ import { $, icon, sessionLost, toast, TOKEN } from "./page.js";
 export const REGISTRY = [
   {id: "anthropic", name: "Anthropic", cli: "claude", sub: "Claude Code — claude -p", mark: "A"},
   {id: "openai", name: "OpenAI", cli: "codex", sub: "Codex CLI — codex exec --json", mark: "O"},
-  {id: "opencode", name: "OpenCode", cli: "opencode", sub: "opencode run — arrives with the next release", mark: "OC"},
+  {id: "opencode", name: "OpenCode", cli: "opencode", sub: "OpenCode — opencode run --format json", mark: "OC"},
 ];
 
 const live = {checks: {}, checkedAt: {}, catalogs: {}, busy: {}, notes: {}, typedBin: {}};
@@ -251,8 +251,8 @@ function sessionBlock(r, entry, check){
   box.appendChild(val);
   const sub = el("div", "sub");
   sub.textContent = entry.supported === false
-    ? "the session test and the model list arrive with the OpenCode engine"
-    : (check ? ago(live.checkedAt[r.id]) + " with " + (r.id === "anthropic" ? "claude auth status" : "codex login status") : "");
+    ? "the session test and the model list arrive when the platform is supported"
+    : (check ? ago(live.checkedAt[r.id]) + " with " + ({anthropic: "claude auth status", openai: "codex login status", opencode: "opencode models"})[r.id] : "");
   box.appendChild(sub);
   const ctrl = el("div", "ctrl");
   ctrl.appendChild(button("Test", "refresh", () => runCheck(r.id), live.busy[r.id] || entry.supported === false || (check && !check.bin_found)));
@@ -267,8 +267,8 @@ function sessionBlock(r, entry, check){
 // jobs_on_platform_enabled is who would run right now. Calling the first
 // "enabled jobs" told an operator whose jobs were all parked that nothing used
 // the platform, so switching it (or one of its models) off looked free.
-function platformJobsLine(entry){
-  if(entry.supported === false) return "runs on OpenCode are not supported yet";
+function platformJobsLine(entry, r){
+  if(entry.supported === false) return "runs on " + r.name + " are not supported yet";
   const n = entry.jobs_on_platform || 0;
   if(!n) return entry.enabled ? "jobs may pick this platform" : "unlocks when the session test passes";
   const on = entry.jobs_on_platform_enabled;
@@ -300,8 +300,10 @@ function modelRow(r, entry, m, using, gone){
     + (m.deprecated_by ? " — deprecated, → " + m.deprecated_by : "")));
   row.appendChild(name);
   const meta = el("div", "mmeta");
+  if(m.provider) meta.appendChild(el("span", null, m.provider));
   if(m.price) meta.appendChild(el("span", "price", "$" + m.price.input + " / $" + m.price.output));
-  else if(r.id === "openai" && !gone) meta.appendChild(el("span", null, "no price"));
+  else if(r.id !== "anthropic" && !gone) meta.appendChild(el("span", null, "no price"));
+  if(m.tools === false) meta.appendChild(el("span", null, "no tools"));
   if(m.efforts && m.efforts.length) meta.appendChild(el("span", null, m.efforts[0] + " → " + m.efforts[m.efforts.length - 1]));
   const n = using[m.v] || 0;
   if(n) meta.appendChild(el("span", "jobs", n + " job" + (n === 1 ? "" : "s")));
@@ -321,10 +323,10 @@ function modelsSection(r, entry, check, catalog){
   head.appendChild(el("h3", null, "Models"));
   const age = el("span", "age");
   if(catalog){
-    const from = r.id === "openai" ? "from codex debug models" : "from the installed CLI";
+    const from = ({anthropic: "from the installed CLI", openai: "from codex debug models", opencode: "from opencode models --verbose"})[r.id];
     age.textContent = from + (catalog.stale ? " — " + catalog.reason : "") + (r.id === "anthropic" ? " · every Claude model takes effort low → max" : "");
   }else if(entry.supported === false){
-    age.textContent = "the providers you sign in to, listed by opencode models";
+    age.textContent = "the providers you sign in to, listed by " + r.cli + " models";
   }
   head.appendChild(age);
   head.appendChild(el("span", "sp"));
@@ -332,7 +334,7 @@ function modelsSection(r, entry, check, catalog){
   head.appendChild(button(catalog ? "Refresh" : "Load models", "refresh", () => loadCatalog(r.id), !ready || live.busy[r.id]));
   frag.appendChild(head);
   if(entry.supported === false){
-    frag.appendChild(el("div", "mempty", "Nothing to switch on yet — OpenCode jobs, and this list, come with the next release. The card is here so the binary is found and named before that day."));
+    frag.appendChild(el("div", "mempty", "Nothing to switch on yet — " + r.name + " jobs, and this list, come with the next release. The card is here so the binary is found and named before that day."));
     return frag;
   }
   if(!catalog){
@@ -360,11 +362,11 @@ function platformCard(r, entry, check, catalog){
   const row = el("div", "swrow"); row.appendChild(document.createTextNode(entry.enabled ? "Enabled " : "Disabled "));
   const canToggle = entry.supported !== false && !live.busy[r.id] && (entry.enabled || (check && check.ready));
   row.appendChild(switchEl(!!entry.enabled, !canToggle,
-    entry.supported === false ? "runs on OpenCode arrive with the next release" : (canToggle ? "" : "unlocks when the session test passes"),
+    entry.supported === false ? "runs on " + r.name + " arrive with the next release" : (canToggle ? "" : "unlocks when the session test passes"),
     "Enable " + r.name,
     async (on) => { await change(on ? "platform_enable" : "platform_disable", {platform: r.id}); }));
   sw.appendChild(row);
-  sw.appendChild(el("span", null, platformJobsLine(entry)));
+  sw.appendChild(el("span", null, platformJobsLine(entry, r)));
   right.appendChild(sw); h.appendChild(right); card.appendChild(h);
   // The engine's own answer, in its own words: a refusal (red, alert icon)
   // or -- a switch-off's sentence about the enabled jobs it leaves skipped --
