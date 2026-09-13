@@ -148,6 +148,24 @@ secção "OpenCode: o ponto de extensão"), a medição manda.
 | `37a-allowlist-block-auto.jsonl`, `37b-env-block-vs-repo-config.jsonl`, `37-permission-block.meta.txt` | depois da aceitação, a pedido da revisão final: (a) o bloco em forma de allowlist que o motor emite (`*: deny`, `read: allow`, `bash: {*: deny, "ls *": allow}`) com `--auto`, num prompt que pede `ls`, `echo hi > x.txt` e um `read`; (b) o bloco read-only no ambiente contra um `opencode.json` do repositório que diz `bash/edit/write: allow` | (a) `ls` correu, o `echo >` falhou por regra ("The user has specified a rule…"), o `read` correu, o turno continuou e acabou em `stop`, `x.txt` não existe: a allowlist funciona como as regras de deny medidas em 23; (b) o bloco do ambiente ganha: o modelo diz que não há ferramenta de shell nenhuma, nada foi escrito, o `read` correu: um repositório não reabre o que o motor fechou. rc 0 e stderr vazio nos dois |
 | `models-after-provider-change.txt`, `models-verbose-after-provider-change.txt` | `opencode models` / `--verbose`, depois da troca de chave | 7 `opencode/*-free` mais 6 `pdm_ai/*` com `cost` real, `limit`, `variants` e `toolcall: true` em todos |
 
+## A UI, vista (`ui/`)
+
+Capturas da T10 (2026-09-13), do dashboard servido por um servidor de rascunho na
+porta 8799 sobre uma config e dados de rascunho em `/tmp/al-vis` com os três
+stand-ins (`test/fake-claude`, `test/fake-codex`, `test/fake-opencode`), nunca a
+config real; o perfil do operador é descartável (`jane@example.org`):
+
+| ficheiro | o que mostra |
+|---|---|
+| `ui/settings-platforms.png` | Settings › Platforms: "3 of 3 platforms enabled", os três cartões |
+| `ui/settings-opencode-card.png` | o cartão OpenCode: binário, sessão ("0 credentials · providers: opencode, pdm_ai", do stand-in), Test, a lista de modelos com provider, preço, variants, "no price", o interruptor e "2 jobs" |
+| `ui/job-editor-agent.png` | o editor de um job em OpenCode, passo *The agent*: Platform, o modelo plano com o provider, o esforço (as variants do modelo, sem legendas Faster/Smarter), os dois modos, Interactive desligado com a frase do stdin |
+| `ui/job-editor-limits.png` | o passo *Limits* com a nota de custo da plataforma |
+| `ui/overview-card.png` | o cartão do job na Overview: "OpenCode · pdm_ai/glm-5.3-flash · High · $1.00/run · full-access" |
+| `ui/runs-table.png` | a tabela de runs com o badge por plataforma (OpenCode, OpenAI, Anthropic) e um run `error / blocked` (tools_denied) |
+| `ui/run-modal.png` | o modal de um run OpenCode: Platform, o modelo pedido → o que correu (do `export`), tokens, a dica de reabertura `opencode run --dir <run dir> -s <sid>` |
+| `ui/project-security.png` | o bloco de segurança de um projecto em OpenCode: Platform, modelo, esforço, a ajuda por plataforma |
+
 ## O que não ficou medido, e porquê
 
 - **Quota esgotada / rate limit.** Os modelos gratuitos do Zen não a
